@@ -1,0 +1,6 @@
+{
+  "default_model": "gemini:gemini-2.5-flash",
+  "fallback_model": "local:qwen2.5-3b.gguf",
+  "allowed_folders": ["~/Downloads", "~/Documents"],
+  "local_only": false
+}

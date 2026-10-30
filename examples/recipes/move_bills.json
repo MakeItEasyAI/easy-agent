@@ -1,0 +1,16 @@
+{
+  "id": "move_bills",
+  "version": 1,
+  "task": "Move PDFs from Downloads to Documents/Bills",
+  "steps": [
+    {
+      "action": "list_files",
+      "params": { "folder": "~/Downloads", "pattern": "*.pdf" },
+      "save_as": "pdfs"
+    },
+    {
+      "action": "move_files",
+      "params": { "files": "$pdfs", "to": "~/Documents/Bills" }
+    }
+  ]
+}
