@@ -1,5 +1,6 @@
 #include "cli/cli.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -35,10 +36,13 @@ void printUsage() {
                  "  easy --version                  print version\n"
                  "\n"
                  "Options:\n"
-                 "  --model <spec>                  AI to use (default: EASY_MODEL, else local)\n"
+                 "  --model <spec>                  AI to use. Default: EASY_MODEL, else \"model\" in\n"
+                 "                                  config.json, else local Ollama.\n"
                  "                                    ollama[:<model>]   local, private (default\n"
                  "                                                       model qwen2.5:3b)\n"
                  "                                    gemini[:<model>]   Google, needs GEMINI_API_KEY\n"
+                 "                                    gemini,ollama      try Gemini, use local if it\n"
+                 "                                                       fails\n"
                  "  --config <config.json>          default: ~/.makeiteasy/config.json\n";
 }
 
@@ -169,9 +173,17 @@ std::optional<storage::Config> loadConfigOrSetup(const std::string& path, Consol
     return std::nullopt;
 }
 
+// Which model to use: --model, else EASY_MODEL, else "model" in config, else local.
+std::string chooseModelSpec(const std::string& cliSpec, const std::string& configSpec) {
+    if (!cliSpec.empty()) return cliSpec;
+    const char* env = std::getenv("EASY_MODEL");
+    if (env != nullptr && *env != '\0') return env;
+    return configSpec;   // may be "" -> makeModel uses the local default
+}
+
 std::unique_ptr<models::ModelProvider> makeModelOrExplain(const std::string& spec) {
     std::string error;
-    auto model = models::makeModel(spec, error);
+    auto model = models::makeModel(spec, error, std::cerr);
     if (!model) {
         std::cerr << "Error: " << error << "\n";
         if (error.find("GEMINI_API_KEY") != std::string::npos) {
@@ -195,7 +207,8 @@ std::optional<core::Recipe> planWithAi(const std::string& task, const std::strin
     if (model->isLocal()) {
         std::cout << "Asking " << model->name() << " (local: nothing leaves this computer)...\n";
     } else {
-        std::cout << "Asking " << model->name() << " (your task text is sent over the internet)...\n";
+        std::cout << "Asking " << model->name()
+                  << " (your task text may be sent over the internet)...\n";
     }
     core::PlanResult result = planner.plan(task);
     if (!result.recipe) {
@@ -246,7 +259,7 @@ int learnCommand(int argc, char** argv) {
     }
 
     // 2. New task: ask the AI once.
-    auto recipe = planWithAi(task, modelSpec);
+    auto recipe = planWithAi(task, chooseModelSpec(modelSpec, config->model));
     if (!recipe) return 1;
     recipe->task = task;   // store the user's words, so the same request matches next time
 
@@ -300,7 +313,10 @@ int planCommand(int argc, char** argv) {
         std::cerr << "Usage: easy plan \"<task>\" [--model <spec>]\n";
         return 1;
     }
-    auto recipe = planWithAi(task, modelSpec);
+    auto recipe = planWithAi(task, chooseModelSpec(modelSpec, [&] {
+        const auto cfg = storage::loadConfigFile(configPath);   // optional for plan
+        return cfg.config ? cfg.config->model : std::string();
+    }()));
     if (!recipe) return 1;
     printRecipe(*recipe);
     std::cout << "\nNothing was run or saved. To run and save it: easy learn \"" << task << "\"\n";
