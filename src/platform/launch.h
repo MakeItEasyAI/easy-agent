@@ -18,4 +18,9 @@ LaunchResult openApp(const std::string& appName);
 // Opens a URL in the default browser, or in `appName` if not empty.
 LaunchResult openUrl(const std::string& url, const std::string& appName);
 
+// Is an app with this name installed? macOS: looks for "<name>.app" in
+// /Applications, /System/Applications (and Utilities), ~/Applications.
+// Other systems: returns true (cannot check cheaply; running will tell).
+bool appExists(const std::string& appName);
+
 }  // namespace easy::platform

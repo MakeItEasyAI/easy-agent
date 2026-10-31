@@ -30,6 +30,7 @@
 #include "models/model_factory.h"
 #include "models/ollama_provider.h"
 #include "models/model_provider.h"
+#include "platform/launch.h"
 #include "platform/platform.h"
 #include "storage/config.h"
 #include "storage/recipe_json.h"
@@ -798,6 +799,24 @@ int main() {
 
         const auto registry = makeDefaultRegistry();
         check(registry.find("open_app") && registry.find("open_url"), "open actions registered");
+
+        // checkParams: what the Validator sends back to the AI
+        check(!OpenUrlAction{}.checkParams({{"url", "youtube.com"}}).empty(),
+              "url without https:// is caught before running");
+        check(OpenUrlAction{}.checkParams({{"url", "https://youtube.com"}}).empty(),
+              "full https url passes");
+        const std::string noApp = OpenAppAction{}.checkParams({{"app", "NoSuchAppEasyAgentTest"}});
+#if defined(__APPLE__)
+        check(noApp.find("open_url") != std::string::npos,
+              "missing app (e.g. YouTube) suggests open_url");
+        check(easy::platform::appExists("Finder") || easy::platform::appExists("Safari"),
+              "a built-in macOS app is found");
+#endif
+        easy::core::RecipeValidator v(registry);
+        easy::core::Recipe youtube;
+        youtube.id = "yt";
+        youtube.steps = {easy::core::Step{"open_url", {{"url", "youtube.com"}}, ""}};
+        check(!v.validate(youtube).ok, "validator rejects open_url without https");
     }
 
     // --- config allowed_apps ---

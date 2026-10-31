@@ -50,6 +50,29 @@ core::RiskLevel OpenAppAction::riskFor(const Params& params) const {
     return core::RiskLevel::Confirm;
 }
 
+std::string OpenAppAction::checkParams(const Params& params) const {
+    const std::string app = param(params, "app");
+    if (app.empty()) return "open_app needs \"app\"";
+    if (!isSafeAppName(app)) return "\"" + app + "\" is not a valid app name";
+    if (!platform::appExists(app)) {
+        return "no app named \"" + app +
+               "\" is installed. If it is a website, use open_url with an https:// link instead";
+    }
+    return "";
+}
+
+std::string OpenUrlAction::checkParams(const Params& params) const {
+    const std::string url = param(params, "url");
+    const std::string app = param(params, "app");
+    if (url.empty()) return "open_url needs \"url\"";
+    if (!isSafeUrl(url)) return "url \"" + url + "\" must be a full link starting with https://";
+    if (!app.empty() && !isSafeAppName(app)) return "\"" + app + "\" is not a valid app name";
+    if (!app.empty() && !platform::appExists(app)) {
+        return "no browser app named \"" + app + "\" is installed";
+    }
+    return "";
+}
+
 ActionResult OpenAppAction::run(const Params& params) {
     const std::string app = param(params, "app");
     if (app.empty()) return {false, "open_app: missing \"app\"", {}};

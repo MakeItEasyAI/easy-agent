@@ -4,6 +4,7 @@
 #include <cctype>
 #include <set>
 
+#include "actions/action.h"
 #include "actions/registry.h"
 
 namespace easy::core {
@@ -30,6 +31,16 @@ ValidationResult RecipeValidator::validate(const Recipe& recipe) const {
 
         if (registry_.find(step.action) == nullptr) {
             result.errors.push_back(where + "unknown action \"" + step.action + "\"");
+        }
+        bool usesVariable = false;
+        for (const auto& [key, value] : step.params) {
+            if (value.size() > 1 && value[0] == '$') usesVariable = true;
+        }
+        if (const actions::Action* action = registry_.find(step.action);
+            action != nullptr && !usesVariable) {
+            if (const std::string problem = action->checkParams(step.params); !problem.empty()) {
+                result.errors.push_back(where + problem);
+            }
         }
         for (const auto& [key, value] : step.params) {
             if (value.size() > 1 && value[0] == '$' && saved.count(value.substr(1)) == 0) {

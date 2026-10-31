@@ -30,6 +30,7 @@ public:
     }
     core::RiskLevel risk() const override { return core::RiskLevel::Confirm; }
     core::RiskLevel riskFor(const Params& params) const override;
+    std::string checkParams(const Params& params) const override;
     std::vector<std::string> pathParams() const override { return {}; }
     ActionResult run(const Params& params) override;
     bool verify(const Params& params) override;
@@ -49,6 +50,7 @@ public:
                "app (optional, the browser to use, e.g. \"Google Chrome\").";
     }
     core::RiskLevel risk() const override { return core::RiskLevel::Confirm; }
+    std::string checkParams(const Params& params) const override;
     std::vector<std::string> pathParams() const override { return {}; }
     ActionResult run(const Params& params) override;
     bool verify(const Params& params) override;
