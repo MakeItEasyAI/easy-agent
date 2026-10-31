@@ -22,6 +22,8 @@ add_library(easy_core
     src/actions/path_utils.cpp
     src/actions/list_files.cpp
     src/actions/move_files.cpp
+    src/core/safety_guard.cpp
+    src/cli/console_confirmer.cpp
 )
 target_include_directories(easy_core PUBLIC src)
 target_link_libraries(easy_core PUBLIC nlohmann_json::nlohmann_json)
