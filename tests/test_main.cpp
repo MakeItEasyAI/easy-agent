@@ -387,6 +387,30 @@ int main() {
               "missing config file rejected");
         check(easy::storage::defaultConfigPath().find('~') == std::string::npos,
               "default config path is expanded");
+
+        const auto missing = easy::storage::loadConfigFile("/no/such/config.json");
+        check(missing.not_found, "missing config is reported as not_found");
+
+        check(!easy::storage::tooBroadReason("/").empty(), "/ is too broad");
+        check(!easy::storage::tooBroadReason("~").empty(), "home folder is too broad");
+        check(easy::storage::tooBroadReason("~/Downloads").empty(), "~/Downloads is fine");
+
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() /
+                             ("easy_test_" + std::to_string(std::random_device{}()));
+        const std::string path = (dir / "sub" / "config.json").string();
+        easy::storage::Config cfg;
+        cfg.allowed_folders = {"~/Downloads", "~/Documents"};
+        check(easy::storage::saveConfigFile(path, cfg).empty(), "config saved (folder created)");
+        const auto reread = easy::storage::loadConfigFile(path);
+        check(reread.config && reread.config->allowed_folders == cfg.allowed_folders,
+              "saved config reads back the same");
+
+        std::ofstream(path) << "{ broken";
+        const auto broken = easy::storage::loadConfigFile(path);
+        check(!broken.config && !broken.not_found, "broken config is an error, not 'not found'");
+        std::error_code ec;
+        fs::remove_all(dir, ec);
     }
 
     // --- Validator ---
@@ -553,6 +577,65 @@ int main() {
             parseGeminiResponse(200, R"({"promptFeedback":{"blockReason":"SAFETY"}})");
         check(!blocked.ok && blocked.error.find("blocked") != std::string::npos,
               "blocked prompt reported");
+    }
+
+    // --- Recipe store: save / load / list / findByTask (temporary folder) ---
+    {
+        namespace fs = std::filesystem;
+        using easy::core::Step;
+        using namespace easy::storage;
+
+        check(normalizeTask("  Move PDFs   to Bills. ") == "move pdfs to bills",
+              "normalizeTask: case, spaces, trailing dot");
+        check(slugify("Move PDFs to Bills!") == "move_pdfs_to_bills", "slugify");
+        check(slugify("!!!") == "recipe", "slugify fallback");
+        check(isValidRecipeId("move_bills-2"), "valid id");
+        check(!isValidRecipeId("../../etc/x"), "path-like id rejected");
+        check(!isValidRecipeId(""), "empty id rejected");
+
+        // JSON round trip
+        easy::core::Recipe r;
+        r.id = "move_bills";
+        r.task = "Move PDFs to Bills";
+        r.steps = {Step{"list_files", {{"folder", "~/Downloads"}, {"pattern", "*.pdf"}}, "pdfs"},
+                   Step{"move_files", {{"files", "$pdfs"}, {"to", "~/Bills"}}, ""}};
+        const auto back = parseRecipe(recipeToJson(r));
+        check(back.recipe && back.recipe->id == r.id && back.recipe->steps.size() == 2 &&
+                  back.recipe->steps[0].save_as == "pdfs" &&
+                  back.recipe->steps[1].params.at("files") == "$pdfs",
+              "recipeToJson -> parseRecipe round trip");
+
+        const fs::path dir = fs::temp_directory_path() /
+                             ("easy_test_" + std::to_string(std::random_device{}()));
+        FileRecipeStore store((dir / "recipes").string());
+
+        check(store.list().empty(), "empty store lists nothing");
+        check(!store.findByTask("anything"), "empty store finds nothing");
+
+        easy::core::Recipe first = r;
+        check(store.save(first).empty() && first.id == "move_bills", "save keeps a free id");
+        check(fs::exists(dir / "recipes" / "move_bills.json"), "file written");
+
+        easy::core::Recipe second = r;
+        check(store.save(second).empty() && second.id == "move_bills_2",
+              "same id gets a suffix, never overwrites");
+
+        easy::core::Recipe evil = r;
+        evil.id = "../../evil";
+        check(store.save(evil).empty() && isValidRecipeId(evil.id), "bad id replaced on save");
+        check(!fs::exists(dir / "evil.json"), "bad id never escapes the folder");
+
+        check(store.load("move_bills").has_value(), "load by id");
+        check(!store.load("nope").has_value(), "load missing id");
+        check(!store.load("../recipes/move_bills").has_value(), "load rejects path-like id");
+        check(store.list().size() == 3, "list finds all saved recipes");
+
+        const auto found = store.findByTask("  move pdfs TO bills. ");
+        check(found.has_value(), "findByTask ignores case/spaces/trailing dot");
+        check(!store.findByTask("move photos to pictures"), "different task not matched");
+
+        std::error_code ec;
+        fs::remove_all(dir, ec);
     }
 
     if (failures == 0) std::cout << "All tests passed\n";

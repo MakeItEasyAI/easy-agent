@@ -1,7 +1,11 @@
 #include "cli/cli.h"
 
+#include <filesystem>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "actions/registry.h"
 #include "cli/console_confirmer.h"
@@ -12,6 +16,7 @@
 #include "models/gemini_provider.h"
 #include "storage/config.h"
 #include "storage/recipe_json.h"
+#include "storage/storage.h"
 
 namespace easy::cli {
 
@@ -20,15 +25,26 @@ namespace {
 void printUsage() {
     std::cout << "easy - teach your computer a task once, run it forever\n\n"
                  "Usage:\n"
-                 "  easy show <recipe.json>         print the steps of a recipe\n"
-                 "  easy run <recipe.json>          run a recipe (asks before risky steps)\n"
-                 "       [--config <config.json>]   default: ~/.makeiteasy/config.json\n"
-                 "  easy plan \"<task>\"             ask the AI for a recipe and show it\n"
-                 "                                  (does not run or save; needs GEMINI_API_KEY)\n"
-                 "  easy learn \"<task>\"            plan, run and save (not implemented)\n"
-                 "  easy list                       list saved recipes (not implemented)\n"
-                 "  easy schedule <recipe> \"<when>\" schedule a recipe (not implemented)\n"
-                 "  easy --version                  print version\n";
+                 "  easy learn \"<task>\"            reuse a saved recipe for this task, or ask the\n"
+                 "                                  AI for one, run it, and save it if it works\n"
+                 "  easy run <name | file.json>     run a saved recipe or a recipe file (no AI)\n"
+                 "  easy list                       list saved recipes\n"
+                 "  easy show <name | file.json>    print the steps of a recipe\n"
+                 "  easy plan \"<task>\"             only show what the AI would do (runs nothing)\n"
+                 "  easy --version                  print version\n"
+                 "\n"
+                 "Options:\n"
+                 "  --config <config.json>          default: ~/.makeiteasy/config.json\n"
+                 "\n"
+                 "AI commands (learn, plan) need GEMINI_API_KEY in your environment.\n";
+}
+
+void printConfigHelp(const std::string& path) {
+    std::cerr << "\nThe agent only touches folders you allow. Create " << path
+              << " like this:\n\n"
+                 "  {\n"
+                 "    \"allowed_folders\": [\"~/Downloads\", \"~/Documents\"]\n"
+                 "  }\n";
 }
 
 void printRecipe(const core::Recipe& r) {
@@ -47,14 +63,108 @@ void printRecipe(const core::Recipe& r) {
     }
 }
 
-// easy plan "<task>": ask the AI for a recipe and print it. Runs nothing.
-int planCommand(int argc, char** argv) {
-    if (argc < 3 || std::string(argv[2]).empty()) {
-        std::cerr << "Usage: easy plan \"<task>\"\n";
-        return 1;
+// Splits arguments into one positional value and an optional --config <path>.
+// Returns false (after printing why) on bad arguments.
+bool parseArgs(int argc, char** argv, std::string& positional, std::string& configPath) {
+    configPath = storage::defaultConfigPath();
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--config") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --config needs a file path\n";
+                return false;
+            }
+            configPath = argv[++i];
+        } else if (positional.empty()) {
+            positional = arg;
+        } else {
+            std::cerr << "Error: unexpected argument: " << arg
+                      << "\n(Put the task in quotes: easy learn \"move my PDFs\")\n";
+            return false;
+        }
     }
-    const std::string task = argv[2];
+    return true;
+}
 
+// "move_bills" -> saved recipe; "path/to/file.json" -> that file.
+std::optional<core::Recipe> loadRecipeArg(const std::string& arg) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(arg, ec)) {
+        auto result = storage::loadRecipeFile(arg);
+        if (!result.recipe) std::cerr << "Error: " << result.error << "\n";
+        return result.recipe;
+    }
+    if (storage::isValidRecipeId(arg)) {
+        storage::FileRecipeStore store(storage::defaultRecipesDir());
+        if (auto recipe = store.load(arg)) return recipe;
+    }
+    std::cerr << "Error: no saved recipe or file named \"" << arg << "\" (see: easy list)\n";
+    return std::nullopt;
+}
+
+// Splits "~/Downloads, ~/Documents" into folders (empty parts ignored).
+std::vector<std::string> splitFolders(const std::string& text) {
+    std::vector<std::string> folders;
+    std::string current;
+    for (char c : text + ",") {
+        if (c == ',') {
+            const auto first = current.find_first_not_of(' ');
+            const auto last = current.find_last_not_of(' ');
+            if (first != std::string::npos) folders.push_back(current.substr(first, last - first + 1));
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    return folders;
+}
+
+// First run: no config yet -> ask which folders to allow and save them.
+std::optional<storage::Config> setupConfig(const std::string& path, ConsoleConfirmer& ask) {
+    const std::vector<std::string> defaults = {"~/Downloads", "~/Documents"};
+
+    std::cout << "No allowed folders yet. The agent only touches folders you allow.\n";
+    storage::Config config;
+    if (ask.confirm("Allow these folders?  ~/Downloads, ~/Documents")) {
+        config.allowed_folders = defaults;
+    } else {
+        const std::string typed = ask.askLine(
+            "Type the folders to allow, separated by commas (Enter to cancel):\n>");
+        config.allowed_folders = splitFolders(typed);
+        if (config.allowed_folders.empty()) {
+            std::cout << "Cancelled. Nothing was saved.\n";
+            return std::nullopt;
+        }
+    }
+
+    for (const std::string& folder : config.allowed_folders) {
+        if (const std::string why = storage::tooBroadReason(folder); !why.empty()) {
+            std::cerr << "Not allowed: " << folder << " (" << why
+                      << "). Pick specific folders like ~/Downloads.\n";
+            return std::nullopt;
+        }
+    }
+
+    if (const std::string error = storage::saveConfigFile(path, config); !error.empty()) {
+        std::cerr << "Error: " << error << "\n";
+        return std::nullopt;
+    }
+    std::cout << "Saved to " << path << " (edit it any time to change folders).\n\n";
+    return config;
+}
+
+// Loads the config; if it does not exist yet, offers to create it.
+std::optional<storage::Config> loadConfigOrSetup(const std::string& path, ConsoleConfirmer& ask) {
+    auto result = storage::loadConfigFile(path);
+    if (result.config) return result.config;
+    if (result.not_found) return setupConfig(path, ask);
+
+    std::cerr << "Error: " << result.error << "\n";   // exists but broken: never overwrite it
+    printConfigHelp(path);
+    return std::nullopt;
+}
+
+std::unique_ptr<models::ModelProvider> makeModelOrExplain() {
     std::string error;
     auto model = models::makeGeminiFromEnv(error);
     if (!model) {
@@ -64,102 +174,155 @@ int planCommand(int argc, char** argv) {
                          "  export GEMINI_API_KEY=\"<your key>\"\n"
                          "Never put the key in a file inside the project.\n";
         }
-        return 1;
     }
+    return model;
+}
+
+std::optional<core::Recipe> planWithAi(const std::string& task) {
+    auto model = makeModelOrExplain();
+    if (!model) return std::nullopt;
 
     const auto registry = actions::makeDefaultRegistry();
     const core::RecipeValidator validator(registry);
     core::LlmPlanner planner(*model, registry, validator);
 
     std::cout << "Asking " << model->name() << " (your task text is sent to Google)...\n";
-    const core::PlanResult result = planner.plan(task);
+    core::PlanResult result = planner.plan(task);
     if (!result.recipe) {
         std::cerr << "Could not plan: " << result.error << "\n";
-        return 1;
+        return std::nullopt;
     }
-
-    printRecipe(*result.recipe);
-    std::cout << "\nNothing was run. (" << result.attempts << " AI call(s))\n";
-    return 0;
+    return std::move(result.recipe);
 }
 
-void printConfigHelp(const std::string& path) {
-    std::cerr << "\nThe agent only touches folders you allow. Create " << path
-              << " like this:\n\n"
-                 "  {\n"
-                 "    \"allowed_folders\": [\"~/Downloads\", \"~/Documents\"]\n"
-                 "  }\n";
-}
-
-// easy run <recipe.json> [--config <path>]
-int runCommand(int argc, char** argv) {
-    std::string recipePath;
-    std::string configPath = storage::defaultConfigPath();
-
-    for (int i = 2; i < argc; ++i) {
-        const std::string arg = argv[i];
-        if (arg == "--config") {
-            if (i + 1 >= argc) {
-                std::cerr << "Error: --config needs a file path\n";
-                return 1;
-            }
-            configPath = argv[++i];
-        } else if (recipePath.empty()) {
-            recipePath = arg;
-        } else {
-            std::cerr << "Error: unexpected argument: " << arg << "\n";
-            return 1;
-        }
-    }
-    if (recipePath.empty()) {
-        std::cerr << "Usage: easy run <recipe.json> [--config <config.json>]\n";
-        return 1;
-    }
-
-    const auto recipeResult = storage::loadRecipeFile(recipePath);
-    if (!recipeResult.recipe) {
-        std::cerr << "Error: " << recipeResult.error << "\n";
-        return 1;
-    }
-
-    const auto configResult = storage::loadConfigFile(configPath);
-    if (!configResult.config) {
-        std::cerr << "Error: " << configResult.error << "\n";
-        printConfigHelp(configPath);
-        return 1;
-    }
-
-    core::Recipe recipe = *recipeResult.recipe;
+// Runs a recipe through the safety guard + confirmations. Prints progress.
+bool runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer) {
     const auto registry = actions::makeDefaultRegistry();
-    const core::FolderSafetyGuard guard(configResult.config->allowed_folders);
-    ConsoleConfirmer confirmer;
+    const core::FolderSafetyGuard guard(config.allowed_folders);
     core::SimpleReplayEngine engine(registry, guard, confirmer, std::cout);
 
     std::cout << "Running " << recipe.id << " (" << recipe.steps.size() << " steps)\n";
     const core::ReplayResult result = engine.replay(recipe);
-
     if (!result.ok) {
         std::cerr << "Stopped: " << result.message << "\n";
-        return 1;
+        return false;
     }
     std::cout << "Done: " << recipe.id << " (" << result.steps_done << " steps)\n";
+    return true;
+}
+
+// ---------------- commands ----------------
+
+// easy learn "<task>": saved recipe first, AI only if needed.
+int learnCommand(int argc, char** argv) {
+    std::string task, configPath;
+    if (!parseArgs(argc, argv, task, configPath)) return 1;
+    if (task.empty()) {
+        std::cerr << "Usage: easy learn \"<task>\" [--config <config.json>]\n";
+        return 1;
+    }
+
+    // Check config BEFORE calling the AI, so a missing config never wastes an AI call.
+    ConsoleConfirmer confirmer;
+    const auto config = loadConfigOrSetup(configPath, confirmer);
+    if (!config) return 1;
+
+    storage::FileRecipeStore store(storage::defaultRecipesDir());
+
+    // 1. Already learned? Run it without AI.
+    if (auto saved = store.findByTask(task)) {
+        std::cout << "Found saved recipe \"" << saved->id << "\" for this task. No AI needed.\n";
+        return runRecipe(*saved, *config, confirmer) ? 0 : 1;
+    }
+
+    // 2. New task: ask the AI once.
+    auto recipe = planWithAi(task);
+    if (!recipe) return 1;
+    recipe->task = task;   // store the user's words, so the same request matches next time
+
+    std::cout << "\n";
+    printRecipe(*recipe);
+    std::cout << "\n";
+    if (!confirmer.confirm("Run this recipe?")) {
+        std::cout << "Not run, not saved.\n";
+        return 1;
+    }
+
+    // 3. Run it. Only save recipes that actually worked.
+    if (!runRecipe(*recipe, *config, confirmer)) {
+        std::cerr << "Recipe NOT saved because it did not finish.\n";
+        return 1;
+    }
+
+    const std::string error = store.save(*recipe);
+    if (!error.empty()) {
+        std::cerr << "Warning: task done, but recipe not saved: " << error << "\n";
+        return 1;
+    }
+    std::cout << "\nSaved as \"" << recipe->id << "\". Next time it runs instantly, without AI:\n"
+              << "  easy run " << recipe->id << "\n";
     return 0;
 }
 
-// easy show <path>: load a recipe file and print it in a readable form.
+// easy run <name | file.json>
+int runCommand(int argc, char** argv) {
+    std::string target, configPath;
+    if (!parseArgs(argc, argv, target, configPath)) return 1;
+    if (target.empty()) {
+        std::cerr << "Usage: easy run <name | file.json> [--config <config.json>]\n";
+        return 1;
+    }
+
+    auto recipe = loadRecipeArg(target);
+    if (!recipe) return 1;
+    ConsoleConfirmer confirmer;
+    const auto config = loadConfigOrSetup(configPath, confirmer);
+    if (!config) return 1;
+
+    return runRecipe(*recipe, *config, confirmer) ? 0 : 1;
+}
+
+// easy plan "<task>": show what the AI would do. Runs and saves nothing.
+int planCommand(int argc, char** argv) {
+    if (argc < 3 || std::string(argv[2]).empty()) {
+        std::cerr << "Usage: easy plan \"<task>\"\n";
+        return 1;
+    }
+    auto recipe = planWithAi(argv[2]);
+    if (!recipe) return 1;
+    printRecipe(*recipe);
+    std::cout << "\nNothing was run or saved. To run and save it: easy learn \"" << argv[2]
+              << "\"\n";
+    return 0;
+}
+
+// easy show <name | file.json>
 int showCommand(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "Usage: easy show <recipe.json>\n";
+        std::cerr << "Usage: easy show <name | file.json>\n";
         return 1;
     }
+    auto recipe = loadRecipeArg(argv[2]);
+    if (!recipe) return 1;
+    printRecipe(*recipe);
+    return 0;
+}
 
-    const auto result = storage::loadRecipeFile(argv[2]);
-    if (!result.recipe) {
-        std::cerr << "Error: " << result.error << "\n";
-        return 1;
+// easy list
+int listCommand() {
+    storage::FileRecipeStore store(storage::defaultRecipesDir());
+    const auto recipes = store.list();
+    if (recipes.empty()) {
+        std::cout << "No saved recipes yet. Teach one with: easy learn \"<task>\"\n";
+        return 0;
     }
-
-    printRecipe(*result.recipe);
+    std::cout << "Saved recipes (" << recipes.size() << ") in " << storage::defaultRecipesDir()
+              << ":\n";
+    for (const auto& r : recipes) {
+        std::cout << "  " << r.id << "  (" << r.steps.size() << " steps)";
+        if (!r.task.empty()) std::cout << "  " << r.task;
+        std::cout << "\n";
+    }
     return 0;
 }
 
@@ -180,17 +343,13 @@ int run(int argc, char** argv) {
         printUsage();
         return 0;
     }
-    if (cmd == "show") {
-        return showCommand(argc, argv);
-    }
-    if (cmd == "run") {
-        return runCommand(argc, argv);
-    }
-    if (cmd == "plan") {
-        return planCommand(argc, argv);
-    }
+    if (cmd == "learn") return learnCommand(argc, argv);
+    if (cmd == "run") return runCommand(argc, argv);
+    if (cmd == "list") return listCommand();
+    if (cmd == "show") return showCommand(argc, argv);
+    if (cmd == "plan") return planCommand(argc, argv);
 
-    std::cerr << "Unknown or not-yet-implemented command: " << cmd << "\n";
+    std::cerr << "Unknown command: " << cmd << "\n\n";
     printUsage();
     return 1;
 }
