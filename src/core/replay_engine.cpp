@@ -1,6 +1,7 @@
 #include "core/replay_engine.h"
 
 #include <algorithm>
+#include <exception>
 #include <map>
 #include <ostream>
 #include <vector>
@@ -104,8 +105,13 @@ ReplayResult SimpleReplayEngine::replay(Recipe& recipe) {
             if (!confirmer_.confirm(question)) return stop(stepNo, "cancelled by user");
         }
 
-        // 4. run
-        actions::ActionResult run = action->run(params);
+        // 4. run (an unexpected exception inside an action becomes a clean stop)
+        actions::ActionResult run;
+        try {
+            run = action->run(params);
+        } catch (const std::exception& e) {
+            return stop(stepNo, step.action + " failed unexpectedly: " + e.what());
+        }
         if (!run.ok) return stop(stepNo, run.message);
 
         // 5. verify

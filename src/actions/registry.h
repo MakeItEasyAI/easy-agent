@@ -12,6 +12,8 @@
 // (typo, or something the AI invented) is rejected.
 namespace easy::actions {
 
+class BrowserSession;
+
 class ActionRegistry {
 public:
     void add(std::unique_ptr<Action> action);
@@ -24,8 +26,11 @@ private:
     std::map<std::string, std::unique_ptr<Action>> actions_;
 };
 
-// Registry with all built-in actions (list_files, move_files, open_app, open_url).
+// Registry with all built-in actions (files, open_app/open_url, browser_*).
 // allowedApps: apps that open_app may start without asking (from config).
-ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps = {});
+// browser:     the agent browser shared by browser_* steps (created if null);
+//              pass your own to close it when the run is over.
+ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps = {},
+                                   std::shared_ptr<BrowserSession> browser = nullptr);
 
 }  // namespace easy::actions

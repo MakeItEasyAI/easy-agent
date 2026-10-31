@@ -43,7 +43,7 @@ public:
 // If the reply is bad, asks again once, telling the model what was wrong.
 class LlmPlanner : public Planner {
 public:
-    static constexpr int kMaxAttempts = 2;
+    static constexpr int kMaxAttempts = 3;
 
     LlmPlanner(models::ModelProvider& model, const actions::ActionRegistry& registry,
                const Validator& validator);

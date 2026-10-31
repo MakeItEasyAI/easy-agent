@@ -38,6 +38,11 @@ public:
     // variables are not known yet and are skipped by the caller.
     virtual std::string checkParams(const Params& /*params*/) const { return ""; }
 
+    // Name of an action that must appear EARLIER in the same recipe for this
+    // one to make sense (e.g. browser_fill needs browser_open). "" = none.
+    // Checked by the Validator, so the AI is told to fix the order.
+    virtual std::string needsEarlier() const { return ""; }
+
     // Names of params that hold file/folder paths. The safety guard checks
     // every one of them against the allowed folders before the action runs.
     // Pure virtual on purpose: a new action cannot forget to declare them.
