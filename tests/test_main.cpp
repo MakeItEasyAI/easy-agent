@@ -8,6 +8,8 @@
 #include <sstream>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "actions/action.h"
 #include "actions/list_files.h"
 #include "actions/move_files.h"
@@ -21,6 +23,7 @@
 #include "core/safety_guard.h"
 #include "core/scheduler.h"
 #include "core/validator.h"
+#include "models/gemini_provider.h"
 #include "models/model_provider.h"
 #include "platform/platform.h"
 #include "storage/config.h"
@@ -515,6 +518,38 @@ int main() {
                       res.error.find("cannot send emails") != std::string::npos,
                   "model refusal is reported, not retried");
         }
+    }
+
+    // --- Gemini request/response (no network) ---
+    {
+        using easy::models::buildGeminiRequest;
+        using easy::models::parseGeminiResponse;
+
+        const auto req = nlohmann::json::parse(buildGeminiRequest("say \"hi\"\nnow"));
+        check(req["contents"][0]["parts"][0]["text"] == "say \"hi\"\nnow",
+              "prompt with quotes/newlines is escaped safely");
+        check(req["generationConfig"]["temperature"] == 0, "temperature 0 for repeatable plans");
+
+        const auto ok = parseGeminiResponse(
+            200, R"({"candidates":[{"content":{"parts":[{"text":"{\"id\":\"x\"}"}]}}]})");
+        check(ok.ok && ok.text == R"({"id":"x"})", "answer text extracted");
+
+        const auto twoParts = parseGeminiResponse(
+            200, R"({"candidates":[{"content":{"parts":[{"text":"ab"},{"text":"cd"}]}}]})");
+        check(twoParts.ok && twoParts.text == "abcd", "multiple parts joined");
+
+        const auto badKey = parseGeminiResponse(
+            400, R"({"error":{"code":400,"message":"API key not valid"}})");
+        check(!badKey.ok && badKey.error.find("API key not valid") != std::string::npos,
+              "API error message reported");
+
+        check(!parseGeminiResponse(500, "oops").ok, "server error with non-JSON body");
+        check(!parseGeminiResponse(200, "not json").ok, "invalid JSON body rejected");
+        check(!parseGeminiResponse(200, R"({"candidates":[]})").ok, "no candidates rejected");
+        const auto blocked =
+            parseGeminiResponse(200, R"({"promptFeedback":{"blockReason":"SAFETY"}})");
+        check(!blocked.ok && blocked.error.find("blocked") != std::string::npos,
+              "blocked prompt reported");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";
