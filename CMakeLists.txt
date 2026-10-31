@@ -53,14 +53,17 @@ else()
     target_sources(easy_core PRIVATE src/models/http_none.cpp)
 endif()
 
-# Platform-specific sources are added here as they are implemented.
-# if(APPLE)
-#   target_sources(easy_core PRIVATE src/platform/mac/mac_platform.mm)
-# elseif(WIN32)
-#   target_sources(easy_core PRIVATE src/platform/windows/windows_platform.cpp)
-# else()
-#   target_sources(easy_core PRIVATE src/platform/linux/linux_platform.cpp)
-# endif()
+# Controlling other apps' windows (ui_fill / ui_click): one file per OS.
+target_sources(easy_core PRIVATE src/actions/ui_actions.cpp src/platform/ui_automation_common.cpp)
+if(APPLE)
+    target_sources(easy_core PRIVATE src/platform/ui_automation_mac.cpp)
+    target_link_libraries(easy_core PUBLIC "-framework ApplicationServices" "-framework CoreFoundation")
+elseif(WIN32)
+    target_sources(easy_core PRIVATE src/platform/ui_automation_win.cpp)
+    target_link_libraries(easy_core PUBLIC ole32 oleaut32)
+else()
+    target_sources(easy_core PRIVATE src/platform/ui_automation_none.cpp)
+endif()
 
 # The command users run: `easy`
 add_executable(easy src/main.cpp)
