@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "core/recipe.h"
 
@@ -53,6 +54,10 @@ public:
                       const std::string& feedback) override;
     PlanResult planWithNote(const std::string& task, const std::string& note) override;
 
+    // What happened earlier in this session (empty = no history). Added to
+    // every prompt so follow-ups like "now open it in the same window" work.
+    void setContext(std::string context) { context_ = std::move(context); }
+
     // Exposed for tests: the exact prompts sent to the model.
     std::string buildPrompt(const std::string& task) const;
     std::string buildRevisePrompt(const std::string& task, const Recipe& rejected,
@@ -61,10 +66,12 @@ public:
 private:
     // Ask -> parse -> validate; on a bad reply ask again (up to kMaxAttempts).
     PlanResult askUntilValid(const std::string& task, const std::string& basePrompt);
+    std::string contextSection() const;
 
     models::ModelProvider& model_;
     const actions::ActionRegistry& registry_;
     const Validator& validator_;
+    std::string context_;
 };
 
 // Pulls the JSON object out of a model reply, removing ```json fences or

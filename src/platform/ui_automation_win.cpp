@@ -304,4 +304,9 @@ UiResult uiClick(const std::string& app, const std::string& text, int waitSecond
     });
 }
 
+std::vector<std::string> uiInspect(const std::string&, std::string& error) {
+    error = "inspect is only available on macOS for now";
+    return {};
+}
+
 }  // namespace easy::platform
