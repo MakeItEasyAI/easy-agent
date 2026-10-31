@@ -28,11 +28,23 @@ add_library(easy_core
     src/core/replay_engine.cpp
     src/core/validator.cpp
     src/core/planner.cpp
+    src/models/gemini_provider.cpp
     src/cli/console_confirmer.cpp
 )
 target_include_directories(easy_core PUBLIC src)
 target_link_libraries(easy_core PUBLIC nlohmann_json::nlohmann_json)
 target_compile_definitions(easy_core PUBLIC EASY_VERSION="${PROJECT_VERSION}")
+
+# HTTPS for cloud AI models. Optional: without libcurl the agent still builds,
+# and AI commands report that HTTPS is unavailable.
+find_package(CURL)
+if(CURL_FOUND)
+    target_sources(easy_core PRIVATE src/models/http_curl.cpp)
+    target_link_libraries(easy_core PUBLIC CURL::libcurl)
+else()
+    message(STATUS "libcurl not found: AI (Gemini) support disabled in this build")
+    target_sources(easy_core PRIVATE src/models/http_none.cpp)
+endif()
 
 # Platform-specific sources are added here as they are implemented.
 # if(APPLE)

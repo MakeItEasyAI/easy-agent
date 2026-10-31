@@ -5,8 +5,11 @@
 
 #include "actions/registry.h"
 #include "cli/console_confirmer.h"
+#include "core/planner.h"
 #include "core/replay_engine.h"
 #include "core/safety_guard.h"
+#include "core/validator.h"
+#include "models/gemini_provider.h"
 #include "storage/config.h"
 #include "storage/recipe_json.h"
 
@@ -20,10 +23,64 @@ void printUsage() {
                  "  easy show <recipe.json>         print the steps of a recipe\n"
                  "  easy run <recipe.json>          run a recipe (asks before risky steps)\n"
                  "       [--config <config.json>]   default: ~/.makeiteasy/config.json\n"
-                 "  easy learn \"<task>\"            plan a task with AI (not implemented)\n"
+                 "  easy plan \"<task>\"             ask the AI for a recipe and show it\n"
+                 "                                  (does not run or save; needs GEMINI_API_KEY)\n"
+                 "  easy learn \"<task>\"            plan, run and save (not implemented)\n"
                  "  easy list                       list saved recipes (not implemented)\n"
                  "  easy schedule <recipe> \"<when>\" schedule a recipe (not implemented)\n"
                  "  easy --version                  print version\n";
+}
+
+void printRecipe(const core::Recipe& r) {
+    std::cout << "Recipe: " << r.id << " (v" << r.version << ")\n";
+    if (!r.task.empty()) std::cout << "Task:   " << r.task << "\n";
+    std::cout << "Steps (" << r.steps.size() << "):\n";
+
+    int n = 1;
+    for (const auto& step : r.steps) {
+        std::cout << "  " << n++ << ". " << step.action;
+        for (const auto& [key, value] : step.params) {
+            std::cout << "  " << key << "=" << value;
+        }
+        if (!step.save_as.empty()) std::cout << "  -> $" << step.save_as;
+        std::cout << "\n";
+    }
+}
+
+// easy plan "<task>": ask the AI for a recipe and print it. Runs nothing.
+int planCommand(int argc, char** argv) {
+    if (argc < 3 || std::string(argv[2]).empty()) {
+        std::cerr << "Usage: easy plan \"<task>\"\n";
+        return 1;
+    }
+    const std::string task = argv[2];
+
+    std::string error;
+    auto model = models::makeGeminiFromEnv(error);
+    if (!model) {
+        std::cerr << "Error: " << error << "\n";
+        if (error.find("GEMINI_API_KEY") != std::string::npos) {
+            std::cerr << "\nGet a free key at https://aistudio.google.com, then in this terminal:\n"
+                         "  export GEMINI_API_KEY=\"<your key>\"\n"
+                         "Never put the key in a file inside the project.\n";
+        }
+        return 1;
+    }
+
+    const auto registry = actions::makeDefaultRegistry();
+    const core::RecipeValidator validator(registry);
+    core::LlmPlanner planner(*model, registry, validator);
+
+    std::cout << "Asking " << model->name() << " (your task text is sent to Google)...\n";
+    const core::PlanResult result = planner.plan(task);
+    if (!result.recipe) {
+        std::cerr << "Could not plan: " << result.error << "\n";
+        return 1;
+    }
+
+    printRecipe(*result.recipe);
+    std::cout << "\nNothing was run. (" << result.attempts << " AI call(s))\n";
+    return 0;
 }
 
 void printConfigHelp(const std::string& path) {
@@ -102,20 +159,7 @@ int showCommand(int argc, char** argv) {
         return 1;
     }
 
-    const core::Recipe& r = *result.recipe;
-    std::cout << "Recipe: " << r.id << " (v" << r.version << ")\n";
-    if (!r.task.empty()) std::cout << "Task:   " << r.task << "\n";
-    std::cout << "Steps ("<< r.steps.size() <<"):\n";
-
-    int n = 1;
-    for (const auto& step : r.steps) {
-        std::cout << "  " << n++ << ". " << step.action;
-        for (const auto& [key, value] : step.params) {
-            std::cout << "  " << key << "=" << value;
-        }
-        if (!step.save_as.empty()) std::cout << "  -> $" << step.save_as;
-        std::cout << "\n";
-    }
+    printRecipe(*result.recipe);
     return 0;
 }
 
@@ -141,6 +185,9 @@ int run(int argc, char** argv) {
     }
     if (cmd == "run") {
         return runCommand(argc, argv);
+    }
+    if (cmd == "plan") {
+        return planCommand(argc, argv);
     }
 
     std::cerr << "Unknown or not-yet-implemented command: " << cmd << "\n";
