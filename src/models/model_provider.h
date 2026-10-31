@@ -18,6 +18,9 @@ public:
     virtual ~ModelProvider() = default;
     virtual std::string name() const = 0;
     virtual ModelReply ask(const std::string& prompt) = 0;
+
+    // true = runs on this computer, nothing is sent to the internet.
+    virtual bool isLocal() const { return false; }
 };
 
 }  // namespace easy::models

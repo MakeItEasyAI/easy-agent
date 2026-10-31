@@ -14,6 +14,7 @@
 #include "core/safety_guard.h"
 #include "core/validator.h"
 #include "models/gemini_provider.h"
+#include "models/model_factory.h"
 #include "storage/config.h"
 #include "storage/recipe_json.h"
 #include "storage/storage.h"
@@ -34,9 +35,11 @@ void printUsage() {
                  "  easy --version                  print version\n"
                  "\n"
                  "Options:\n"
-                 "  --config <config.json>          default: ~/.makeiteasy/config.json\n"
-                 "\n"
-                 "AI commands (learn, plan) need GEMINI_API_KEY in your environment.\n";
+                 "  --model <spec>                  AI to use (default: EASY_MODEL, else local)\n"
+                 "                                    ollama[:<model>]   local, private (default\n"
+                 "                                                       model qwen2.5:3b)\n"
+                 "                                    gemini[:<model>]   Google, needs GEMINI_API_KEY\n"
+                 "  --config <config.json>          default: ~/.makeiteasy/config.json\n";
 }
 
 void printConfigHelp(const std::string& path) {
@@ -63,18 +66,20 @@ void printRecipe(const core::Recipe& r) {
     }
 }
 
-// Splits arguments into one positional value and an optional --config <path>.
+// Splits arguments into one positional value plus optional
+//   --config <path>   and   --model <spec>
 // Returns false (after printing why) on bad arguments.
-bool parseArgs(int argc, char** argv, std::string& positional, std::string& configPath) {
+bool parseArgs(int argc, char** argv, std::string& positional, std::string& configPath,
+               std::string& modelSpec) {
     configPath = storage::defaultConfigPath();
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--config") {
+        if (arg == "--config" || arg == "--model") {
             if (i + 1 >= argc) {
-                std::cerr << "Error: --config needs a file path\n";
+                std::cerr << "Error: " << arg << " needs a value\n";
                 return false;
             }
-            configPath = argv[++i];
+            (arg == "--config" ? configPath : modelSpec) = argv[++i];
         } else if (positional.empty()) {
             positional = arg;
         } else {
@@ -164,29 +169,34 @@ std::optional<storage::Config> loadConfigOrSetup(const std::string& path, Consol
     return std::nullopt;
 }
 
-std::unique_ptr<models::ModelProvider> makeModelOrExplain() {
+std::unique_ptr<models::ModelProvider> makeModelOrExplain(const std::string& spec) {
     std::string error;
-    auto model = models::makeGeminiFromEnv(error);
+    auto model = models::makeModel(spec, error);
     if (!model) {
         std::cerr << "Error: " << error << "\n";
         if (error.find("GEMINI_API_KEY") != std::string::npos) {
             std::cerr << "\nGet a free key at https://aistudio.google.com, then in this terminal:\n"
                          "  export GEMINI_API_KEY=\"<your key>\"\n"
-                         "Never put the key in a file inside the project.\n";
+                         "Never put the key in a file inside the project.\n"
+                         "Or use a local model instead:  --model ollama\n";
         }
     }
     return model;
 }
 
-std::optional<core::Recipe> planWithAi(const std::string& task) {
-    auto model = makeModelOrExplain();
+std::optional<core::Recipe> planWithAi(const std::string& task, const std::string& modelSpec) {
+    auto model = makeModelOrExplain(modelSpec);
     if (!model) return std::nullopt;
 
     const auto registry = actions::makeDefaultRegistry();
     const core::RecipeValidator validator(registry);
     core::LlmPlanner planner(*model, registry, validator);
 
-    std::cout << "Asking " << model->name() << " (your task text is sent to Google)...\n";
+    if (model->isLocal()) {
+        std::cout << "Asking " << model->name() << " (local: nothing leaves this computer)...\n";
+    } else {
+        std::cout << "Asking " << model->name() << " (your task text is sent over the internet)...\n";
+    }
     core::PlanResult result = planner.plan(task);
     if (!result.recipe) {
         std::cerr << "Could not plan: " << result.error << "\n";
@@ -215,10 +225,10 @@ bool runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confir
 
 // easy learn "<task>": saved recipe first, AI only if needed.
 int learnCommand(int argc, char** argv) {
-    std::string task, configPath;
-    if (!parseArgs(argc, argv, task, configPath)) return 1;
+    std::string task, configPath, modelSpec;
+    if (!parseArgs(argc, argv, task, configPath, modelSpec)) return 1;
     if (task.empty()) {
-        std::cerr << "Usage: easy learn \"<task>\" [--config <config.json>]\n";
+        std::cerr << "Usage: easy learn \"<task>\" [--model <spec>] [--config <config.json>]\n";
         return 1;
     }
 
@@ -236,7 +246,7 @@ int learnCommand(int argc, char** argv) {
     }
 
     // 2. New task: ask the AI once.
-    auto recipe = planWithAi(task);
+    auto recipe = planWithAi(task, modelSpec);
     if (!recipe) return 1;
     recipe->task = task;   // store the user's words, so the same request matches next time
 
@@ -266,8 +276,8 @@ int learnCommand(int argc, char** argv) {
 
 // easy run <name | file.json>
 int runCommand(int argc, char** argv) {
-    std::string target, configPath;
-    if (!parseArgs(argc, argv, target, configPath)) return 1;
+    std::string target, configPath, modelSpec;
+    if (!parseArgs(argc, argv, target, configPath, modelSpec)) return 1;
     if (target.empty()) {
         std::cerr << "Usage: easy run <name | file.json> [--config <config.json>]\n";
         return 1;
@@ -284,15 +294,16 @@ int runCommand(int argc, char** argv) {
 
 // easy plan "<task>": show what the AI would do. Runs and saves nothing.
 int planCommand(int argc, char** argv) {
-    if (argc < 3 || std::string(argv[2]).empty()) {
-        std::cerr << "Usage: easy plan \"<task>\"\n";
+    std::string task, configPath, modelSpec;
+    if (!parseArgs(argc, argv, task, configPath, modelSpec)) return 1;
+    if (task.empty()) {
+        std::cerr << "Usage: easy plan \"<task>\" [--model <spec>]\n";
         return 1;
     }
-    auto recipe = planWithAi(argv[2]);
+    auto recipe = planWithAi(task, modelSpec);
     if (!recipe) return 1;
     printRecipe(*recipe);
-    std::cout << "\nNothing was run or saved. To run and save it: easy learn \"" << argv[2]
-              << "\"\n";
+    std::cout << "\nNothing was run or saved. To run and save it: easy learn \"" << task << "\"\n";
     return 0;
 }
 

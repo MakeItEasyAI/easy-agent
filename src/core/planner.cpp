@@ -38,13 +38,25 @@ std::string LlmPlanner::buildPrompt(const std::string& task) const {
            "Rules:\n"
            "- Use ONLY the actions listed below. If the task cannot be done with them,\n"
            "  reply with {\"error\": \"<why>\"}.\n"
+           "- Include EVERY step needed to finish the whole task.\n"
            "- Every param value is a string.\n"
-           "- To use the output of an earlier step, give that step a save_as name and\n"
-           "  use \"$name\" as the whole param value in a later step.\n"
+           "- To use the output of an earlier step, give that step a save_as name made of\n"
+           "  letters, digits and _ only (no $), then use \"$name\" as the whole param value\n"
+           "  in a later step.\n"
            "- Paths may start with ~ for the home folder.\n"
            "\n"
            "Available actions:\n" +
            actionList +
+           "\n"
+           "Example (a different task, for format only):\n"
+           "Task: Move all .jpg files from ~/Desktop to ~/Pictures/Old\n"
+           "{\"id\": \"move_desktop_jpgs\", \"task\": \"Move all .jpg files from ~/Desktop to "
+           "~/Pictures/Old\", \"steps\": [\n"
+           "  {\"action\": \"list_files\", \"params\": {\"folder\": \"~/Desktop\", "
+           "\"pattern\": \"*.jpg\"}, \"save_as\": \"jpgs\"},\n"
+           "  {\"action\": \"move_files\", \"params\": {\"files\": \"$jpgs\", "
+           "\"to\": \"~/Pictures/Old\"}}\n"
+           "]}\n"
            "\n"
            "Task: " +
            task + "\n";
