@@ -22,6 +22,10 @@ class Action {
 public:
     virtual ~Action() = default;
     virtual std::string name() const = 0;
+
+    // One-line explanation + params, shown to the AI so it knows what it can use.
+    virtual std::string description() const = 0;
+
     virtual core::RiskLevel risk() const = 0;
 
     // Names of params that hold file/folder paths. The safety guard checks

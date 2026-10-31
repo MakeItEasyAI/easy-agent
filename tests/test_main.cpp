@@ -6,6 +6,7 @@
 #include <iostream>
 #include <random>
 #include <sstream>
+#include <vector>
 
 #include "actions/action.h"
 #include "actions/list_files.h"
@@ -383,6 +384,137 @@ int main() {
               "missing config file rejected");
         check(easy::storage::defaultConfigPath().find('~') == std::string::npos,
               "default config path is expanded");
+    }
+
+    // --- Validator ---
+    {
+        using easy::core::Step;
+        const auto registry = easy::actions::makeDefaultRegistry();
+        easy::core::RecipeValidator validator(registry);
+
+        easy::core::Recipe good;
+        good.id = "ok";
+        good.steps = {Step{"list_files", {{"folder", "~/Downloads"}}, "pdfs"},
+                      Step{"move_files", {{"files", "$pdfs"}, {"to", "~/Bills"}}, ""}};
+        check(validator.validate(good).ok, "valid recipe passes validator");
+
+        easy::core::Recipe unknown = good;
+        unknown.steps[0].action = "delete_everything";
+        check(!validator.validate(unknown).ok, "unknown action fails validator");
+
+        easy::core::Recipe badVar = good;
+        badVar.steps[1].params["files"] = "$nope";
+        check(!validator.validate(badVar).ok, "undefined $var fails validator");
+
+        easy::core::Recipe wrongOrder;
+        wrongOrder.id = "order";
+        wrongOrder.steps = {Step{"move_files", {{"files", "$pdfs"}, {"to", "~/B"}}, ""},
+                            Step{"list_files", {{"folder", "~/D"}}, "pdfs"}};
+        check(!validator.validate(wrongOrder).ok, "$var used before it is saved fails");
+
+        easy::core::Recipe dupe;
+        dupe.id = "dupe";
+        dupe.steps = {Step{"list_files", {{"folder", "~/A"}}, "x"},
+                      Step{"list_files", {{"folder", "~/B"}}, "x"}};
+        check(!validator.validate(dupe).ok, "duplicate save_as fails");
+    }
+
+    // --- extractJson ---
+    {
+        using easy::core::extractJson;
+        check(extractJson(R"({"a":1})") == R"({"a":1})", "plain JSON kept");
+        check(extractJson("```json\n{\"a\":1}\n```") == R"({"a":1})", "markdown fences removed");
+        check(extractJson("Sure! {\"a\":1} Hope this helps") == R"({"a":1})", "extra text removed");
+        check(extractJson("no json here").empty(), "no JSON gives empty");
+    }
+
+    // --- LlmPlanner with a fake model ---
+    {
+        struct FakeModel : easy::models::ModelProvider {
+            std::vector<easy::models::ModelReply> replies;   // returned in order
+            std::vector<std::string> prompts;                // what the planner sent
+            std::string name() const override { return "fake"; }
+            easy::models::ModelReply ask(const std::string& prompt) override {
+                prompts.push_back(prompt);
+                if (prompts.size() > replies.size()) return {false, "", "no more replies"};
+                return replies[prompts.size() - 1];
+            }
+        };
+
+        const auto registry = easy::actions::makeDefaultRegistry();
+        easy::core::RecipeValidator validator(registry);
+        const std::string goodJson =
+            R"({"id":"move_bills","steps":[)"
+            R"({"action":"list_files","params":{"folder":"~/Downloads","pattern":"*.pdf"},"save_as":"pdfs"},)"
+            R"({"action":"move_files","params":{"files":"$pdfs","to":"~/Documents/Bills"}}]})";
+
+        // 1. Good reply on first try (wrapped in markdown, like real models do)
+        {
+            FakeModel model;
+            model.replies = {{true, "```json\n" + goodJson + "\n```", ""}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+            const auto res = planner.plan("Move PDFs to Bills");
+            check(res.recipe.has_value(), "planner returns recipe");
+            check(res.attempts == 1, "one attempt when reply is good");
+            check(res.recipe && res.recipe->task == "Move PDFs to Bills", "task filled in");
+            check(res.recipe && res.recipe->steps.size() == 2, "recipe has 2 steps");
+        }
+
+        // 2. Prompt tells the model the task and every action
+        {
+            FakeModel model;
+            easy::core::LlmPlanner planner(model, registry, validator);
+            const std::string prompt = planner.buildPrompt("Move PDFs to Bills");
+            check(prompt.find("Move PDFs to Bills") != std::string::npos, "prompt has task");
+            check(prompt.find("list_files") != std::string::npos &&
+                      prompt.find("move_files") != std::string::npos,
+                  "prompt lists actions");
+        }
+
+        // 3. Bad reply, then good reply -> retry works and tells model the problem
+        {
+            FakeModel model;
+            model.replies = {
+                {true, R"({"id":"x","steps":[{"action":"delete_everything"}]})", ""},
+                {true, goodJson, ""}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+            const auto res = planner.plan("Move PDFs");
+            check(res.recipe.has_value(), "retry succeeds");
+            check(res.attempts == 2, "two attempts");
+            check(model.prompts.size() == 2 &&
+                      model.prompts[1].find("previous reply was invalid") != std::string::npos,
+                  "second prompt explains the problem");
+        }
+
+        // 4. Bad twice -> gives up with an error (never returns a bad recipe)
+        {
+            FakeModel model;
+            model.replies = {{true, "I can't help", ""}, {true, "still no json", ""}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+            const auto res = planner.plan("Move PDFs");
+            check(!res.recipe.has_value() && !res.error.empty(), "gives up after 2 bad replies");
+            check(res.attempts == 2, "stops at max attempts");
+        }
+
+        // 5. Model/network error -> no retry
+        {
+            FakeModel model;
+            model.replies = {{false, "", "network down"}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+            const auto res = planner.plan("Move PDFs");
+            check(!res.recipe.has_value() && res.attempts == 1, "model error is not retried");
+        }
+
+        // 6. Model says it cannot do the task
+        {
+            FakeModel model;
+            model.replies = {{true, R"({"error":"cannot send emails"})", ""}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+            const auto res = planner.plan("Email my boss");
+            check(!res.recipe.has_value() && res.attempts == 1 &&
+                      res.error.find("cannot send emails") != std::string::npos,
+                  "model refusal is reported, not retried");
+        }
     }
 
     if (failures == 0) std::cout << "All tests passed\n";

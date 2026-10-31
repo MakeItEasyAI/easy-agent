@@ -17,6 +17,11 @@ namespace easy::actions {
 class MoveFilesAction : public Action {
 public:
     std::string name() const override { return "move_files"; }
+    std::string description() const override {
+        return "Move files into a folder (created if missing, never overwrites). "
+               "params: files (required, usually \"$name\" from an earlier step's save_as), "
+               "to (required, destination folder). outputs: the new file paths.";
+    }
     core::RiskLevel risk() const override { return core::RiskLevel::Confirm; }
     std::vector<std::string> pathParams() const override { return {"files", "to"}; }
     ActionResult run(const Params& params) override;

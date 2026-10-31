@@ -15,6 +15,12 @@ Action* ActionRegistry::find(const std::string& name) const {
     return it == actions_.end() ? nullptr : it->second.get();
 }
 
+std::vector<const Action*> ActionRegistry::all() const {
+    std::vector<const Action*> out;
+    for (const auto& [actionName, action] : actions_) out.push_back(action.get());
+    return out;   // std::map keeps keys sorted, so this is sorted by name
+}
+
 ActionRegistry makeDefaultRegistry() {
     ActionRegistry registry;
     registry.add(std::make_unique<ListFilesAction>());

@@ -13,6 +13,12 @@ namespace easy::actions {
 class ListFilesAction : public Action {
 public:
     std::string name() const override { return "list_files"; }
+    std::string description() const override {
+        return "List files in one folder (not subfolders). "
+               "params: folder (required, e.g. \"~/Downloads\"), "
+               "pattern (optional, e.g. \"*.pdf\", default \"*\"). "
+               "outputs: the matching file paths.";
+    }
     core::RiskLevel risk() const override { return core::RiskLevel::Safe; }
     std::vector<std::string> pathParams() const override { return {"folder"}; }
     ActionResult run(const Params& params) override;
