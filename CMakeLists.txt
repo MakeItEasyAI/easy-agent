@@ -32,6 +32,7 @@ add_library(easy_core
     src/models/gemini_provider.cpp
     src/models/ollama_provider.cpp
     src/models/model_factory.cpp
+    src/models/fallback_provider.cpp
     src/models/http_common.cpp
     src/cli/console_confirmer.cpp
 )

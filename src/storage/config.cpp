@@ -37,6 +37,10 @@ ConfigLoadResult parseConfig(const std::string& jsonText) {
             return fail("every entry in \"allowed_folders\" must be a folder path");
         config.allowed_folders.push_back(folder.get<std::string>());
     }
+    if (j.contains("model")) {
+        if (!j["model"].is_string()) return fail("\"model\" must be text, e.g. \"gemini,ollama\"");
+        config.model = j["model"].get<std::string>();
+    }
     return {std::move(config), ""};
 }
 
@@ -62,7 +66,8 @@ std::string saveConfigFile(const std::string& path, const Config& config) {
     fs::create_directories(fs::path(path).parent_path(), ec);
     if (ec) return "cannot create folder for " + path + ": " + ec.message();
 
-    const nlohmann::json j = {{"allowed_folders", config.allowed_folders}};
+    nlohmann::json j = {{"allowed_folders", config.allowed_folders}};
+    if (!config.model.empty()) j["model"] = config.model;
     std::ofstream out(path, std::ios::trunc);
     if (!out) return "cannot write " + path;
     out << j.dump(2) << "\n";

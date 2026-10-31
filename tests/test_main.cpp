@@ -23,6 +23,7 @@
 #include "core/safety_guard.h"
 #include "core/scheduler.h"
 #include "core/validator.h"
+#include "models/fallback_provider.h"
 #include "models/gemini_provider.h"
 #include "models/http.h"
 #include "models/model_factory.h"
@@ -678,12 +679,85 @@ int main() {
               "plain http to a remote host is refused even with allow_local_http");
 
         std::string error;
-        auto local = makeModel("ollama:phi3:mini", error);
+        std::ostringstream notices;
+        auto local = makeModel("ollama:phi3:mini", error, notices);
         check(local && local->name() == "ollama:phi3:mini" && local->isLocal(),
               "ollama:<model> keeps the full model name (with its own colon)");
-        auto def = makeModel("ollama", error);
+        auto def = makeModel("ollama", error, notices);
         check(def && def->name() == "ollama:qwen2.5:3b", "ollama default model");
-        check(!makeModel("openai:gpt", error) && !error.empty(), "unknown provider rejected");
+        check(!makeModel("openai:gpt", error, notices) && !error.empty(), "unknown provider rejected");
+
+        auto chain = makeModel("gemini, ollama", error, notices);
+        check(chain && chain->name().find("ollama:qwen2.5:3b") != std::string::npos &&
+                  chain->name().find(" -> ") != std::string::npos,
+              "comma list builds a fallback chain");
+        check(!makeModel("gemini,typo", error, notices), "typo inside a chain is an error");
+    }
+
+    // --- FallbackProvider with fake models ---
+    {
+        using namespace easy::models;
+        struct Fake : ModelProvider {
+            std::string id;
+            bool works;
+            bool local;
+            int calls = 0;
+            Fake(std::string i, bool w, bool l) : id(std::move(i)), works(w), local(l) {}
+            std::string name() const override { return id; }
+            bool isLocal() const override { return local; }
+            ModelReply ask(const std::string&) override {
+                ++calls;
+                return works ? ModelReply{true, "answer from " + id, ""}
+                             : ModelReply{false, "", id + " is down"};
+            }
+        };
+
+        auto build = [](bool cloudWorks, bool localWorks, Fake*& cloud, Fake*& local,
+                        std::ostream& out) {
+            std::vector<std::unique_ptr<ModelProvider>> list;
+            auto c = std::make_unique<Fake>("cloud", cloudWorks, false);
+            auto l = std::make_unique<Fake>("local", localWorks, true);
+            cloud = c.get();
+            local = l.get();
+            list.push_back(std::move(c));
+            list.push_back(std::move(l));
+            return FallbackProvider(std::move(list), out);
+        };
+
+        Fake *cloud = nullptr, *local = nullptr;
+        std::ostringstream out;
+
+        auto both = build(true, true, cloud, local, out);
+        check(both.ask("x").text == "answer from cloud" && local->calls == 0,
+              "first model works -> second never called");
+        check(!both.isLocal() && both.name() == "cloud -> local", "chain name and not-local");
+
+        std::ostringstream out2;
+        auto fallback = build(false, true, cloud, local, out2);
+        const auto reply = fallback.ask("x");
+        check(reply.ok && reply.text == "answer from local", "falls back when first fails");
+        check(out2.str().find("trying local") != std::string::npos, "user is told about fallback");
+        fallback.ask("again");
+        check(cloud->calls == 1 && local->calls == 2, "after a fallback, retries go straight to local");
+
+        std::ostringstream out3;
+        auto none = build(false, false, cloud, local, out3);
+        const auto bad = none.ask("x");
+        check(!bad.ok && bad.error.find("cloud is down") != std::string::npos &&
+                  bad.error.find("local is down") != std::string::npos,
+              "all failing -> error lists every reason");
+
+        UnavailableProvider missingKey("gemini", "GEMINI_API_KEY is not set");
+        check(!missingKey.ask("x").ok, "unavailable provider always fails with its reason");
+    }
+
+    // --- config "model" field ---
+    {
+        const auto withModel = easy::storage::parseConfig(
+            R"({"allowed_folders": ["~/Downloads"], "model": "gemini,ollama"})");
+        check(withModel.config && withModel.config->model == "gemini,ollama", "config model read");
+        check(!easy::storage::parseConfig(R"({"allowed_folders": ["~/D"], "model": 5})").config,
+              "non-text model rejected");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";
