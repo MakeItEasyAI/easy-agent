@@ -22,7 +22,9 @@ add_library(easy_core
     src/actions/path_utils.cpp
     src/actions/list_files.cpp
     src/actions/move_files.cpp
+    src/actions/registry.cpp
     src/core/safety_guard.cpp
+    src/core/replay_engine.cpp
     src/cli/console_confirmer.cpp
 )
 target_include_directories(easy_core PUBLIC src)

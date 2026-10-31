@@ -10,6 +10,7 @@
 #include "actions/action.h"
 #include "actions/list_files.h"
 #include "actions/move_files.h"
+#include "actions/registry.h"
 #include "cli/console_confirmer.h"
 #include "core/confirmer.h"
 #include "actions/path_utils.h"
@@ -259,6 +260,112 @@ int main() {
         check(!answer("\n"), "empty answer is no");
         check(!answer(""), "no input is no");
         check(!answer("yep\n"), "anything else is no");
+    }
+
+    // --- Replay engine: full recipe, end to end, in a temporary folder ---
+    {
+        namespace fs = std::filesystem;
+        using easy::core::Recipe;
+        using easy::core::Step;
+
+        // Fake confirmer: answers automatically and remembers it was asked
+        struct FakeConfirmer : easy::core::Confirmer {
+            bool answer = true;
+            int asked = 0;
+            bool confirm(const std::string&) override { ++asked; return answer; }
+        };
+
+        const fs::path dir = fs::temp_directory_path() /
+                             ("easy_test_" + std::to_string(std::random_device{}()));
+        const fs::path downloads = dir / "Downloads";
+        const fs::path bills = dir / "Bills";
+        auto reset = [&] {
+            std::error_code ec;
+            fs::remove_all(dir, ec);
+            fs::create_directories(downloads);
+            for (const char* name : {"a.pdf", "b.pdf", "notes.txt"})
+                std::ofstream(downloads / name) << "test";
+        };
+
+        auto makeRecipe = [&](const std::string& to) {
+            Recipe r;
+            r.id = "move_bills";
+            r.steps.push_back(Step{"list_files",
+                                   {{"folder", downloads.string()}, {"pattern", "*.pdf"}},
+                                   "pdfs"});
+            r.steps.push_back(Step{"move_files", {{"files", "$pdfs"}, {"to", to}}, ""});
+            return r;
+        };
+
+        const auto registry = easy::actions::makeDefaultRegistry();
+        easy::core::FolderSafetyGuard guard({dir.string()});
+        std::ostringstream log;
+
+        // 1. Happy path: user says yes -> PDFs moved, txt stays
+        reset();
+        {
+            FakeConfirmer yes;
+            easy::core::SimpleReplayEngine engine(registry, guard, yes, log);
+            Recipe r = makeRecipe(bills.string());
+            const auto res = engine.replay(r);
+            check(res.ok, "replay succeeds");
+            check(res.steps_done == 2, "both steps done");
+            check(yes.asked == 1, "asked once (only move_files needs confirmation)");
+            check(fs::exists(bills / "a.pdf") && fs::exists(bills / "b.pdf"), "pdfs moved");
+            check(fs::exists(downloads / "notes.txt"), "non-pdf left alone");
+        }
+
+        // 2. User says no -> nothing moved
+        reset();
+        {
+            FakeConfirmer no;
+            no.answer = false;
+            easy::core::SimpleReplayEngine engine(registry, guard, no, log);
+            Recipe r = makeRecipe(bills.string());
+            const auto res = engine.replay(r);
+            check(!res.ok, "replay stops when user says no");
+            check(res.steps_done == 1, "only list_files ran");
+            check(fs::exists(downloads / "a.pdf"), "nothing moved after no");
+        }
+
+        // 3. Destination outside allowed folders -> denied, never asked
+        reset();
+        {
+            FakeConfirmer yes;
+            easy::core::FolderSafetyGuard narrow({downloads.string()});
+            easy::core::SimpleReplayEngine engine(registry, narrow, yes, log);
+            Recipe r = makeRecipe(bills.string());
+            const auto res = engine.replay(r);
+            check(!res.ok, "outside destination is denied");
+            check(yes.asked == 0, "denied steps never ask the user");
+            check(fs::exists(downloads / "a.pdf"), "nothing moved when denied");
+        }
+
+        // 4. Unknown action -> stop
+        {
+            FakeConfirmer yes;
+            easy::core::SimpleReplayEngine engine(registry, guard, yes, log);
+            Recipe r;
+            r.id = "bad";
+            r.steps.push_back(Step{"delete_everything", {}, ""});
+            check(!engine.replay(r).ok, "unknown action is rejected");
+        }
+
+        // 5. Unknown variable -> stop
+        reset();
+        {
+            FakeConfirmer yes;
+            easy::core::SimpleReplayEngine engine(registry, guard, yes, log);
+            Recipe r;
+            r.id = "bad";
+            r.steps.push_back(Step{"move_files", {{"files", "$nope"}, {"to", bills.string()}}, ""});
+            const auto res = engine.replay(r);
+            check(!res.ok, "unknown variable is rejected");
+            check(yes.asked == 0, "unknown variable stops before asking");
+        }
+
+        std::error_code ec;
+        fs::remove_all(dir, ec);
     }
 
     if (failures == 0) std::cout << "All tests passed\n";
