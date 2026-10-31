@@ -559,6 +559,56 @@ int main() {
                       res.error.find("cannot send emails") != std::string::npos,
                   "model refusal is reported, not retried");
         }
+
+        // 7. Revise: user rejected a plan and said what to change
+        {
+            FakeModel model;
+            const std::string revisedJson =
+                R"({"id":"yt","steps":[{"action":"open_url","params":{"url":"https://youtube.com","app":"Safari"}}]})";
+            model.replies = {{true, revisedJson, ""}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+
+            easy::core::Recipe rejected;
+            rejected.id = "yt";
+            rejected.steps = {easy::core::Step{"open_url", {{"url", "https://youtube.com"}}, ""}};
+
+            const auto res = planner.revise("Open youtube.com in Safari", rejected, "use Safari");
+            check(res.recipe && res.recipe->steps[0].params.count("app") == 1,
+                  "revise returns the new plan");
+            check(model.prompts.size() == 1 &&
+                      model.prompts[0].find("use Safari") != std::string::npos &&
+                      model.prompts[0].find("REJECTED") != std::string::npos &&
+                      model.prompts[0].find("https://youtube.com") != std::string::npos,
+                  "revise prompt has the feedback and the rejected plan");
+            check(model.prompts[0].find("Task: Open youtube.com in Safari") != std::string::npos,
+                  "revise prompt keeps the original task");
+        }
+
+        // 9. planWithNote: the AI gave up, the user adds a note
+        {
+            FakeModel model;
+            model.replies = {{true, goodJson, ""}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+            const auto res = planner.planWithNote("Move PDFs", "Bills is in ~/Documents");
+            check(res.recipe.has_value(), "planWithNote returns a plan");
+            check(model.prompts[0].find("Bills is in ~/Documents") != std::string::npos,
+                  "planWithNote prompt has the user's note");
+        }
+
+        // 8. Revise: bad reply first -> the retry still contains the user's feedback
+        {
+            FakeModel model;
+            model.replies = {{true, "not json", ""}, {true, goodJson, ""}};
+            easy::core::LlmPlanner planner(model, registry, validator);
+            easy::core::Recipe rejected;
+            rejected.id = "x";
+            rejected.steps = {easy::core::Step{"list_files", {{"folder", "~/D"}}, "a"}};
+            const auto res = planner.revise("Move PDFs", rejected, "also move them to Bills");
+            check(res.recipe && res.attempts == 2, "revise retries a bad reply");
+            check(model.prompts.size() == 2 &&
+                      model.prompts[1].find("also move them to Bills") != std::string::npos,
+                  "retry keeps the user's feedback");
+        }
     }
 
     // --- Gemini request/response (no network) ---
