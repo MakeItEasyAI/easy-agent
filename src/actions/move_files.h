@@ -18,6 +18,7 @@ class MoveFilesAction : public Action {
 public:
     std::string name() const override { return "move_files"; }
     core::RiskLevel risk() const override { return core::RiskLevel::Confirm; }
+    std::vector<std::string> pathParams() const override { return {"files", "to"}; }
     ActionResult run(const Params& params) override;
     bool verify(const Params& params) override;
 };
