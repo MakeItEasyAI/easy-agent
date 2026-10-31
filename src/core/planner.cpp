@@ -73,8 +73,31 @@ std::string LlmPlanner::buildPrompt(const std::string& task) const {
 }
 
 PlanResult LlmPlanner::plan(const std::string& task) {
+    return askUntilValid(task, buildPrompt(task));
+}
+
+std::string LlmPlanner::buildRevisePrompt(const std::string& task, const Recipe& rejected,
+                                          const std::string& feedback) const {
+    return buildPrompt(task) +
+           "\nThe user REJECTED this plan:\n" + storage::recipeToJson(rejected) +
+           "\nThe user's feedback: " + feedback +
+           "\nMake a NEW recipe for the same task that follows the feedback. "
+           "Reply with ONLY the JSON object.\n";
+}
+
+PlanResult LlmPlanner::revise(const std::string& task, const Recipe& rejected,
+                              const std::string& feedback) {
+    return askUntilValid(task, buildRevisePrompt(task, rejected, feedback));
+}
+
+PlanResult LlmPlanner::planWithNote(const std::string& task, const std::string& note) {
+    return askUntilValid(task, buildPrompt(task) + "\nA note from the user about this task: " +
+                                   note + "\nUse it to make the recipe.\n");
+}
+
+PlanResult LlmPlanner::askUntilValid(const std::string& task, const std::string& basePrompt) {
     PlanResult result;
-    std::string prompt = buildPrompt(task);
+    std::string prompt = basePrompt;
 
     for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
         result.attempts = attempt;
@@ -115,9 +138,10 @@ PlanResult LlmPlanner::plan(const std::string& task) {
             }
         }
 
-        // Ask again, telling the model exactly what was wrong.
+        // Ask again, telling the model exactly what was wrong (keeping any
+        // user feedback that was in the base prompt).
         result.error = "invalid recipe from AI: " + problem;
-        prompt = buildPrompt(task) +
+        prompt = basePrompt +
                  "\nYour previous reply was invalid: " + problem +
                  "\nReply again with ONLY the corrected JSON object.\n";
     }

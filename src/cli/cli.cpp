@@ -196,27 +196,68 @@ std::unique_ptr<models::ModelProvider> makeModelOrExplain(const std::string& spe
     return model;
 }
 
-std::optional<core::Recipe> planWithAi(const std::string& task, const std::string& modelSpec) {
-    auto model = makeModelOrExplain(modelSpec);
-    if (!model) return std::nullopt;
-
-    const auto registry = actions::makeDefaultRegistry();
-    const core::RecipeValidator validator(registry);
-    core::LlmPlanner planner(*model, registry, validator);
-
-    if (model->isLocal()) {
-        std::cout << "Asking " << model->name() << " (local: nothing leaves this computer)...\n";
-    } else {
-        std::cout << "Asking " << model->name()
-                  << " (your task text may be sent over the internet)...\n";
+// The model + planner for one command. Kept alive so a plan can be revised
+// several times with the same model.
+class AiSession {
+public:
+    static std::unique_ptr<AiSession> create(const std::string& modelSpec) {
+        auto model = makeModelOrExplain(modelSpec);
+        if (!model) return nullptr;
+        return std::unique_ptr<AiSession>(new AiSession(std::move(model)));
     }
-    core::PlanResult result = planner.plan(task);
-    if (!result.recipe) {
-        std::cerr << "Could not plan: " << result.error << "\n";
-        return std::nullopt;
+
+    std::optional<core::Recipe> plan(const std::string& task) {
+        announce();
+        return finish(planner_.plan(task), "Could not plan");
     }
-    return std::move(result.recipe);
-}
+
+    std::optional<core::Recipe> revise(const std::string& task, const core::Recipe& rejected,
+                                       const std::string& feedback) {
+        std::cout << "Asking the AI again with your note...\n";
+        return finish(planner_.revise(task, rejected, feedback), "Could not change the plan");
+    }
+
+    std::optional<core::Recipe> planWithNote(const std::string& task, const std::string& note) {
+        std::cout << "Asking the AI again with your note...\n";
+        return finish(planner_.planWithNote(task, note), "Could not plan");
+    }
+
+    // True if the last failure was the model itself (network, key, Ollama
+    // down...): a note from the user cannot fix that.
+    bool lastFailureWasModel() const { return lastError_.rfind("model error", 0) == 0; }
+
+private:
+    explicit AiSession(std::unique_ptr<models::ModelProvider> model)
+        : model_(std::move(model)),
+          registry_(actions::makeDefaultRegistry()),
+          validator_(registry_),
+          planner_(*model_, registry_, validator_) {}
+
+    void announce() const {
+        if (model_->isLocal()) {
+            std::cout << "Asking " << model_->name() << " (local: nothing leaves this computer)...\n";
+        } else {
+            std::cout << "Asking " << model_->name()
+                      << " (your task text may be sent over the internet)...\n";
+        }
+    }
+
+    std::optional<core::Recipe> finish(core::PlanResult result, const char* what) {
+        lastError_ = result.error;
+        if (!result.recipe) {
+            std::cout << std::flush;   // keep messages in order on screen
+            std::cerr << what << ": " << result.error << std::endl;
+            return std::nullopt;
+        }
+        return std::move(result.recipe);
+    }
+
+    std::unique_ptr<models::ModelProvider> model_;
+    actions::ActionRegistry registry_;
+    core::RecipeValidator validator_;
+    core::LlmPlanner planner_;
+    std::string lastError_;
+};
 
 // Runs a recipe through the safety guard + confirmations. Prints progress.
 bool runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer) {
@@ -258,17 +299,45 @@ int learnCommand(int argc, char** argv) {
         return runRecipe(*saved, *config, confirmer) ? 0 : 1;
     }
 
-    // 2. New task: ask the AI once.
-    auto recipe = planWithAi(task, chooseModelSpec(modelSpec, config->model));
-    if (!recipe) return 1;
-    recipe->task = task;   // store the user's words, so the same request matches next time
+    // 2. New task: ask the AI.
+    auto ai = AiSession::create(chooseModelSpec(modelSpec, config->model));
+    if (!ai) return 1;
+    auto recipe = ai->plan(task);
 
-    std::cout << "\n";
-    printRecipe(*recipe);
-    std::cout << "\n";
-    if (!confirmer.confirm("Run this recipe?")) {
-        std::cout << "Not run, not saved.\n";
-        return 1;
+    // Review loop: run the plan, or tell the AI what to change (also when the
+    // AI could not make a plan at all). Every new plan is checked again.
+    constexpr int kMaxChanges = 3;
+    for (int changes = 0;; ++changes) {
+        std::string question;
+        if (recipe) {
+            recipe->task = task;   // store the user's words, so the same request matches next time
+            std::cout << "\n";
+            printRecipe(*recipe);
+            std::cout << "\n";
+            if (confirmer.confirm("Run this recipe?")) break;
+            question = "What should change? (Enter to cancel)\n>";
+        } else {
+            if (ai->lastFailureWasModel()) return 1;   // a note cannot fix a model/network problem
+            question = "Tell the AI more about what you want (Enter to cancel)\n>";
+        }
+
+        if (changes == kMaxChanges) {
+            std::cout << "Stopped after " << kMaxChanges
+                      << " changes. Not run, not saved. Try rewording the task.\n";
+            return 1;
+        }
+        const std::string feedback = confirmer.askLine(question);
+        if (feedback.empty()) {
+            std::cout << "Not run, not saved.\n";
+            return 1;
+        }
+
+        auto next = recipe ? ai->revise(task, *recipe, feedback) : ai->planWithNote(task, feedback);
+        if (next) {
+            recipe = std::move(next);
+        } else if (recipe) {
+            std::cout << "Keeping the previous plan.\n";
+        }
     }
 
     // 3. Run it. Only save recipes that actually worked.
@@ -313,10 +382,12 @@ int planCommand(int argc, char** argv) {
         std::cerr << "Usage: easy plan \"<task>\" [--model <spec>]\n";
         return 1;
     }
-    auto recipe = planWithAi(task, chooseModelSpec(modelSpec, [&] {
+    auto ai = AiSession::create(chooseModelSpec(modelSpec, [&] {
         const auto cfg = storage::loadConfigFile(configPath);   // optional for plan
         return cfg.config ? cfg.config->model : std::string();
     }()));
+    if (!ai) return 1;
+    auto recipe = ai->plan(task);
     if (!recipe) return 1;
     printRecipe(*recipe);
     std::cout << "\nNothing was run or saved. To run and save it: easy learn \"" << task << "\"\n";
