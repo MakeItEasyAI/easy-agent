@@ -30,6 +30,9 @@ add_library(easy_core
     src/core/validator.cpp
     src/core/planner.cpp
     src/models/gemini_provider.cpp
+    src/models/ollama_provider.cpp
+    src/models/model_factory.cpp
+    src/models/http_common.cpp
     src/cli/console_confirmer.cpp
 )
 target_include_directories(easy_core PUBLIC src)

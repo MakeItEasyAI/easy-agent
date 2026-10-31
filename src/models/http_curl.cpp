@@ -28,9 +28,16 @@ struct CurlGlobal {
 bool httpAvailable() { return true; }
 
 HttpResponse httpPostJson(const std::string& url, const std::vector<std::string>& headers,
-                          const std::string& body) {
+                          const std::string& body, const HttpOptions& options) {
     static CurlGlobal global;
     HttpResponse response;
+
+    const bool https = url.rfind("https://", 0) == 0;
+    const bool localHttp = options.allow_local_http && isLocalHttpUrl(url);
+    if (!https && !localHttp) {
+        response.error = "refusing non-HTTPS URL (plain http is only allowed for localhost)";
+        return response;
+    }
 
     CURL* curl = curl_easy_init();
     if (curl == nullptr) {
@@ -49,18 +56,19 @@ HttpResponse httpPostJson(const std::string& url, const std::vector<std::string>
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, onData);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
 
-    // Safety: HTTPS only, verify certificates (curl default, set explicitly),
+    // Safety: HTTPS only (plain http only for localhost), verify certificates,
     // never follow redirects, and never hang forever.
 #if LIBCURL_VERSION_NUM >= 0x075500
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, localHttp ? "http" : "https");
 #else
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, localHttp ? CURLPROTO_HTTP : CURLPROTO_HTTPS);
 #endif
+    if (localHttp) curl_easy_setopt(curl, CURLOPT_NOPROXY, "*");   // local traffic never via a proxy
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 90L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, options.timeout_seconds);
 
     const CURLcode code = curl_easy_perform(curl);
     if (code == CURLE_OK) {

@@ -24,6 +24,9 @@
 #include "core/scheduler.h"
 #include "core/validator.h"
 #include "models/gemini_provider.h"
+#include "models/http.h"
+#include "models/model_factory.h"
+#include "models/ollama_provider.h"
 #include "models/model_provider.h"
 #include "platform/platform.h"
 #include "storage/config.h"
@@ -442,8 +445,19 @@ int main() {
         easy::core::Recipe dupe;
         dupe.id = "dupe";
         dupe.steps = {Step{"list_files", {{"folder", "~/A"}}, "x"},
-                      Step{"list_files", {{"folder", "~/B"}}, "x"}};
+                      Step{"list_files", {{"folder", "~/B"}}, "x"},
+                      Step{"move_files", {{"files", "$x"}, {"to", "~/C"}}, ""}};
         check(!validator.validate(dupe).ok, "duplicate save_as fails");
+
+        easy::core::Recipe junkName;
+        junkName.id = "junk";
+        junkName.steps = {Step{"list_files", {{"folder", "~/A"}}, "$$fileList$"}};
+        check(!validator.validate(junkName).ok, "junk save_as name like $$fileList$ fails");
+
+        easy::core::Recipe unfinished;
+        unfinished.id = "half";
+        unfinished.steps = {Step{"list_files", {{"folder", "~/Downloads"}}, "pdfs"}};
+        check(!validator.validate(unfinished).ok, "saved but unused result = unfinished recipe");
     }
 
     // --- extractJson ---
@@ -636,6 +650,40 @@ int main() {
 
         std::error_code ec;
         fs::remove_all(dir, ec);
+    }
+
+    // --- Ollama (no network) + localhost rule + model selection ---
+    {
+        using namespace easy::models;
+        const auto req = nlohmann::json::parse(buildOllamaRequest("qwen2.5:3b", "hi \"there\""));
+        check(req["model"] == "qwen2.5:3b" && req["prompt"] == "hi \"there\"" &&
+                  req["stream"] == false && req["format"] == "json",
+              "ollama request has model, prompt, no streaming, JSON format");
+
+        check(parseOllamaResponse(200, R"({"response":"{\"id\":\"x\"}","done":true})", "m").text ==
+                  R"({"id":"x"})",
+              "ollama answer extracted");
+        const auto missing = parseOllamaResponse(404, R"({"error":"model not found"})", "qwen2.5:3b");
+        check(!missing.ok && missing.error.find("ollama pull qwen2.5:3b") != std::string::npos,
+              "missing model suggests ollama pull");
+        check(!parseOllamaResponse(200, R"({"error":"boom"})", "m").ok, "ollama error reported");
+        check(!parseOllamaResponse(200, R"({"response":""})", "m").ok, "empty answer rejected");
+
+        check(isLocalHttpUrl("http://localhost:11434/api/generate"), "localhost allowed");
+        check(isLocalHttpUrl("http://127.0.0.1:11434/"), "127.0.0.1 allowed");
+        check(!isLocalHttpUrl("http://example.com/"), "remote http refused");
+        check(!isLocalHttpUrl("http://localhost.evil.com/"), "look-alike host refused");
+        check(!isLocalHttpUrl("https://localhost:11434/"), "only plain-http localhost counts");
+        check(!httpPostJson("http://example.com/", {}, "{}", HttpOptions{5, true}).ok,
+              "plain http to a remote host is refused even with allow_local_http");
+
+        std::string error;
+        auto local = makeModel("ollama:phi3:mini", error);
+        check(local && local->name() == "ollama:phi3:mini" && local->isLocal(),
+              "ollama:<model> keeps the full model name (with its own colon)");
+        auto def = makeModel("ollama", error);
+        check(def && def->name() == "ollama:qwen2.5:3b", "ollama default model");
+        check(!makeModel("openai:gpt", error) && !error.empty(), "unknown provider rejected");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";
