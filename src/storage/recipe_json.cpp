@@ -74,6 +74,23 @@ RecipeLoadResult parseRecipe(const std::string& jsonText) {
     return {std::move(recipe), ""};
 }
 
+std::string recipeToJson(const core::Recipe& recipe) {
+    json j;
+    j["id"] = recipe.id;
+    j["version"] = recipe.version;
+    if (!recipe.task.empty()) j["task"] = recipe.task;
+    j["steps"] = json::array();
+    for (const core::Step& step : recipe.steps) {
+        json s;
+        s["action"] = step.action;
+        s["params"] = json::object();
+        for (const auto& [key, value] : step.params) s["params"][key] = value;
+        if (!step.save_as.empty()) s["save_as"] = step.save_as;
+        j["steps"].push_back(std::move(s));
+    }
+    return j.dump(2) + "\n";
+}
+
 RecipeLoadResult loadRecipeFile(const std::string& path) {
     std::ifstream file(path);
     if (!file) return fail("cannot open file: " + path);
