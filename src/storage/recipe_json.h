@@ -17,4 +17,7 @@ struct RecipeLoadResult {
 RecipeLoadResult parseRecipe(const std::string& jsonText);
 RecipeLoadResult loadRecipeFile(const std::string& path);
 
+// The reverse: Recipe -> pretty JSON text (same format parseRecipe reads).
+std::string recipeToJson(const core::Recipe& recipe);
+
 }  // namespace easy::storage

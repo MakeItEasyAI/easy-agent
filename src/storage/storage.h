@@ -6,16 +6,48 @@
 
 #include "core/recipe.h"
 
-// Reads and writes agent data under ~/.makeiteasy/
-//   recipes/*.json, schedules.json, logs/
+// Saved recipes, one JSON file each: ~/.makeiteasy/recipes/<id>.json
 namespace easy::storage {
 
 class RecipeStore {
 public:
     virtual ~RecipeStore() = default;
-    virtual bool save(const core::Recipe& recipe) = 0;
+
+    // Saves the recipe. If another recipe already uses the id, a suffix is
+    // added (_2, _3, ...) and recipe.id is updated. Returns "" or an error.
+    virtual std::string save(core::Recipe& recipe) = 0;
+
     virtual std::optional<core::Recipe> load(const std::string& id) = 0;
-    virtual std::vector<std::string> list() = 0;
+    virtual std::vector<core::Recipe> list() = 0;   // sorted by id
+
+    // A saved recipe whose task matches (see normalizeTask), if any.
+    virtual std::optional<core::Recipe> findByTask(const std::string& task) = 0;
 };
+
+class FileRecipeStore : public RecipeStore {
+public:
+    explicit FileRecipeStore(std::string folder) : folder_(std::move(folder)) {}
+
+    std::string save(core::Recipe& recipe) override;
+    std::optional<core::Recipe> load(const std::string& id) override;
+    std::vector<core::Recipe> list() override;
+    std::optional<core::Recipe> findByTask(const std::string& task) override;
+
+private:
+    std::string folder_;
+};
+
+std::string defaultRecipesDir();   // ~/.makeiteasy/recipes, expanded
+
+// Recipe ids become file names, so only letters, digits, '_' and '-' are
+// allowed (max 64). This blocks names like "../../x" escaping the folder.
+bool isValidRecipeId(const std::string& id);
+
+// "Move PDFs to Bills!" -> "move_pdfs_to_bills" (fallback "recipe")
+std::string slugify(const std::string& text);
+
+// For matching tasks: lowercase, single spaces, no leading/trailing spaces,
+// no trailing . ! ?   "  Move PDFs  to Bills. " -> "move pdfs to bills"
+std::string normalizeTask(const std::string& task);
 
 }  // namespace easy::storage
