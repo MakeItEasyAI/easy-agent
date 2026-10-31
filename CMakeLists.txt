@@ -25,6 +25,8 @@ add_library(easy_core
     src/actions/list_files.cpp
     src/actions/move_files.cpp
     src/actions/registry.cpp
+    src/actions/open_actions.cpp
+    src/platform/launch.cpp
     src/core/safety_guard.cpp
     src/core/replay_engine.cpp
     src/core/validator.cpp

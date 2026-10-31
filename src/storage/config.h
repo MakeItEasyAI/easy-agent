@@ -11,6 +11,7 @@ namespace easy::storage {
 
 struct Config {
     std::vector<std::string> allowed_folders;
+    std::vector<std::string> allowed_apps;   // optional: open_app runs these without asking
     std::string model;   // optional, e.g. "gemini,ollama" (see models/model_factory.h)
 };
 

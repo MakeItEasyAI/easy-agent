@@ -220,7 +220,7 @@ std::optional<core::Recipe> planWithAi(const std::string& task, const std::strin
 
 // Runs a recipe through the safety guard + confirmations. Prints progress.
 bool runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer) {
-    const auto registry = actions::makeDefaultRegistry();
+    const auto registry = actions::makeDefaultRegistry(config.allowed_apps);
     const core::FolderSafetyGuard guard(config.allowed_folders);
     core::SimpleReplayEngine engine(registry, guard, confirmer, std::cout);
 

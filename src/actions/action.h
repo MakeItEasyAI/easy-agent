@@ -28,6 +28,10 @@ public:
 
     virtual core::RiskLevel risk() const = 0;
 
+    // Risk for these exact params. Default: same as risk(). Lets an action be
+    // Safe for some values (e.g. an app you allowed) and Confirm for others.
+    virtual core::RiskLevel riskFor(const Params& /*params*/) const { return risk(); }
+
     // Names of params that hold file/folder paths. The safety guard checks
     // every one of them against the allowed folders before the action runs.
     // Pure virtual on purpose: a new action cannot forget to declare them.

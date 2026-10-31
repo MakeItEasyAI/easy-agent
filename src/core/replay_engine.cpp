@@ -95,7 +95,7 @@ ReplayResult SimpleReplayEngine::replay(Recipe& recipe) {
             const auto it = params.find(name);
             if (it != params.end()) paths.push_back(it->second);
         }
-        const SafetyDecision safety = guard_.check(action->risk(), paths);
+        const SafetyDecision safety = guard_.check(action->riskFor(params), paths);
         if (safety.decision == Decision::Deny) return stop(stepNo, "denied: " + safety.reason);
         if (safety.decision == Decision::AskUser) {
             const std::string question =

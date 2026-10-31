@@ -2,6 +2,7 @@
 
 #include "actions/list_files.h"
 #include "actions/move_files.h"
+#include "actions/open_actions.h"
 
 namespace easy::actions {
 
@@ -21,10 +22,12 @@ std::vector<const Action*> ActionRegistry::all() const {
     return out;   // std::map keeps keys sorted, so this is sorted by name
 }
 
-ActionRegistry makeDefaultRegistry() {
+ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps) {
     ActionRegistry registry;
     registry.add(std::make_unique<ListFilesAction>());
     registry.add(std::make_unique<MoveFilesAction>());
+    registry.add(std::make_unique<OpenAppAction>(allowedApps));
+    registry.add(std::make_unique<OpenUrlAction>());
     return registry;
 }
 
