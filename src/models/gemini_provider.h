@@ -7,13 +7,15 @@
 
 // Google Gemini over HTTPS.
 //   Key:   environment variable GEMINI_API_KEY   (never stored in files)
-//   Model: environment variable GEMINI_MODEL      (default gemini-2.5-flash)
+//   Model: environment variable GEMINI_MODEL      (default below)
 // The key is sent in a request header, never in the URL, and never printed.
 namespace easy::models {
 
 class GeminiProvider : public ModelProvider {
 public:
-    static constexpr const char* kDefaultModel = "gemini-2.5-flash";
+    // Default from Google's own error reply when gemini-2.5-flash was retired for
+    // new users. Override any time with:  export GEMINI_MODEL=<model name>
+    static constexpr const char* kDefaultModel = "gemini-3.8-flash";
 
     GeminiProvider(std::string apiKey, std::string model);
 

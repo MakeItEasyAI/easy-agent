@@ -34,6 +34,9 @@ ModelReply parseGeminiResponse(long httpStatus, const std::string& body) {
             j["error"].contains("message") && j["error"]["message"].is_string()) {
             message += ": " + j["error"]["message"].get<std::string>();
         }
+        if (httpStatus == 404) {
+            message += "\nTip: choose another model with  export GEMINI_MODEL=<model name>";
+        }
         return {false, "", "Gemini error " + message};
     }
     if (j.is_discarded() || !j.is_object()) return {false, "", "Gemini sent invalid JSON"};

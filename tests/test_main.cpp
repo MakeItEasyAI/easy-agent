@@ -544,6 +544,9 @@ int main() {
               "API error message reported");
 
         check(!parseGeminiResponse(500, "oops").ok, "server error with non-JSON body");
+        const auto gone = parseGeminiResponse(404, R"({"error":{"message":"model not found"}})");
+        check(!gone.ok && gone.error.find("GEMINI_MODEL") != std::string::npos,
+              "404 suggests choosing another model");
         check(!parseGeminiResponse(200, "not json").ok, "invalid JSON body rejected");
         check(!parseGeminiResponse(200, R"({"candidates":[]})").ok, "no candidates rejected");
         const auto blocked =
