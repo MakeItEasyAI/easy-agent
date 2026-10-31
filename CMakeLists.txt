@@ -19,6 +19,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 add_library(easy_core
     src/cli/cli.cpp
     src/storage/recipe_json.cpp
+    src/storage/config.cpp
     src/actions/path_utils.cpp
     src/actions/list_files.cpp
     src/actions/move_files.cpp
