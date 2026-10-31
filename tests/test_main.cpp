@@ -22,6 +22,7 @@
 #include "core/validator.h"
 #include "models/model_provider.h"
 #include "platform/platform.h"
+#include "storage/config.h"
 #include "storage/recipe_json.h"
 #include "storage/storage.h"
 
@@ -366,6 +367,22 @@ int main() {
 
         std::error_code ec;
         fs::remove_all(dir, ec);
+    }
+
+    // --- Config parsing ---
+    {
+        using easy::storage::parseConfig;
+        const auto ok = parseConfig(R"({"allowed_folders": ["~/Downloads", "~/Documents"]})");
+        check(ok.config.has_value() && ok.config->allowed_folders.size() == 2, "config parses");
+        check(!parseConfig("nope").config, "invalid config JSON rejected");
+        check(!parseConfig("{}").config, "missing allowed_folders rejected");
+        check(!parseConfig(R"({"allowed_folders": []})").config, "empty allowed_folders rejected");
+        check(!parseConfig(R"({"allowed_folders": [""]})").config, "empty folder entry rejected");
+        check(!parseConfig(R"({"allowed_folders": [5]})").config, "non-text folder rejected");
+        check(!easy::storage::loadConfigFile("/no/such/config.json").config,
+              "missing config file rejected");
+        check(easy::storage::defaultConfigPath().find('~') == std::string::npos,
+              "default config path is expanded");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";

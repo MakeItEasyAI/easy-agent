@@ -3,6 +3,11 @@
 #include <iostream>
 #include <string>
 
+#include "actions/registry.h"
+#include "cli/console_confirmer.h"
+#include "core/replay_engine.h"
+#include "core/safety_guard.h"
+#include "storage/config.h"
 #include "storage/recipe_json.h"
 
 namespace easy::cli {
@@ -13,11 +18,75 @@ void printUsage() {
     std::cout << "easy - teach your computer a task once, run it forever\n\n"
                  "Usage:\n"
                  "  easy show <recipe.json>         print the steps of a recipe\n"
+                 "  easy run <recipe.json>          run a recipe (asks before risky steps)\n"
+                 "       [--config <config.json>]   default: ~/.makeiteasy/config.json\n"
                  "  easy learn \"<task>\"            plan a task with AI (not implemented)\n"
-                 "  easy run <recipe>               replay a saved recipe (not implemented)\n"
                  "  easy list                       list saved recipes (not implemented)\n"
                  "  easy schedule <recipe> \"<when>\" schedule a recipe (not implemented)\n"
                  "  easy --version                  print version\n";
+}
+
+void printConfigHelp(const std::string& path) {
+    std::cerr << "\nThe agent only touches folders you allow. Create " << path
+              << " like this:\n\n"
+                 "  {\n"
+                 "    \"allowed_folders\": [\"~/Downloads\", \"~/Documents\"]\n"
+                 "  }\n";
+}
+
+// easy run <recipe.json> [--config <path>]
+int runCommand(int argc, char** argv) {
+    std::string recipePath;
+    std::string configPath = storage::defaultConfigPath();
+
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--config") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --config needs a file path\n";
+                return 1;
+            }
+            configPath = argv[++i];
+        } else if (recipePath.empty()) {
+            recipePath = arg;
+        } else {
+            std::cerr << "Error: unexpected argument: " << arg << "\n";
+            return 1;
+        }
+    }
+    if (recipePath.empty()) {
+        std::cerr << "Usage: easy run <recipe.json> [--config <config.json>]\n";
+        return 1;
+    }
+
+    const auto recipeResult = storage::loadRecipeFile(recipePath);
+    if (!recipeResult.recipe) {
+        std::cerr << "Error: " << recipeResult.error << "\n";
+        return 1;
+    }
+
+    const auto configResult = storage::loadConfigFile(configPath);
+    if (!configResult.config) {
+        std::cerr << "Error: " << configResult.error << "\n";
+        printConfigHelp(configPath);
+        return 1;
+    }
+
+    core::Recipe recipe = *recipeResult.recipe;
+    const auto registry = actions::makeDefaultRegistry();
+    const core::FolderSafetyGuard guard(configResult.config->allowed_folders);
+    ConsoleConfirmer confirmer;
+    core::SimpleReplayEngine engine(registry, guard, confirmer, std::cout);
+
+    std::cout << "Running " << recipe.id << " (" << recipe.steps.size() << " steps)\n";
+    const core::ReplayResult result = engine.replay(recipe);
+
+    if (!result.ok) {
+        std::cerr << "Stopped: " << result.message << "\n";
+        return 1;
+    }
+    std::cout << "Done: " << recipe.id << " (" << result.steps_done << " steps)\n";
+    return 0;
 }
 
 // easy show <path>: load a recipe file and print it in a readable form.
@@ -69,6 +138,9 @@ int run(int argc, char** argv) {
     }
     if (cmd == "show") {
         return showCommand(argc, argv);
+    }
+    if (cmd == "run") {
+        return runCommand(argc, argv);
     }
 
     std::cerr << "Unknown or not-yet-implemented command: " << cmd << "\n";

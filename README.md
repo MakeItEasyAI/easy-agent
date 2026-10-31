@@ -3,7 +3,22 @@
 > **MakeItEasy Agent** — teach your computer a task once, and it runs it forever.
 > Fast, offline-first, single binary. No AI needed after learning.
 
-⚠️ **Status:** early development (v0.0). Not usable yet.
+⚠️ **Status:** v0.1 in progress. `easy show` and `easy run` work with hand-written recipes
+and file actions (`list_files`, `move_files`). AI (`easy learn`) and scheduling are not built yet.
+
+## Try it
+
+```bash
+# 1. Allow folders (the agent never touches anything else)
+mkdir -p ~/.makeiteasy
+cat > ~/.makeiteasy/config.json <<'EOF'
+{ "allowed_folders": ["~/Downloads", "~/Documents"] }
+EOF
+
+# 2. Look at a recipe, then run it (asks before moving anything)
+./build/easy show examples/recipes/move_bills.json
+./build/easy run  examples/recipes/move_bills.json
+```
 
 ## What it does
 
