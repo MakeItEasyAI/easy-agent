@@ -16,7 +16,7 @@ out/
 # Large model files (download separately)
 *.gguf
 *.bin
-models/
+/models/
 
 # Local agent data
 .makeiteasy/
