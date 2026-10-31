@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include "core/safety_guard.h"
 
@@ -14,6 +15,7 @@ using Params = std::map<std::string, std::string>;
 struct ActionResult {
     bool ok = false;
     std::string message;
+    std::vector<std::string> outputs;   // e.g. file paths; stored by `save_as`
 };
 
 class Action {

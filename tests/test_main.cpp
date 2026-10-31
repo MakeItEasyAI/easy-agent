@@ -1,9 +1,14 @@
 // Minimal tests until a test framework (GoogleTest) is added.
 // Including every header makes sure the interfaces keep compiling.
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <random>
 
 #include "actions/action.h"
+#include "actions/list_files.h"
+#include "actions/path_utils.h"
 #include "core/planner.h"
 #include "core/recipe.h"
 #include "core/replay_engine.h"
@@ -75,6 +80,53 @@ int main() {
     {
         const auto res = easy::storage::loadRecipeFile("/no/such/file.json");
         check(!res.recipe.has_value(), "missing file gives error");
+    }
+
+    // --- matchesPattern ---
+    using easy::actions::matchesPattern;
+    check(matchesPattern("bill.pdf", "*.pdf"), "*.pdf matches bill.pdf");
+    check(matchesPattern("Bill.PDF", "*.pdf"), "pattern is case-insensitive");
+    check(!matchesPattern("bill.txt", "*.pdf"), "*.pdf does not match .txt");
+    check(matchesPattern("a1.txt", "a?.txt"), "? matches one character");
+    check(!matchesPattern("a12.txt", "a?.txt"), "? does not match two characters");
+    check(matchesPattern("anything", "*"), "* matches everything");
+    check(matchesPattern("report_2025_final.pdf", "report*final*"), "multiple *");
+
+    // --- expandHome ---
+    using easy::actions::expandHome;
+    check(expandHome("/tmp/x") == "/tmp/x", "absolute path unchanged");
+    check(expandHome("~/Downloads").find('~') == std::string::npos, "~ expanded");
+    check(expandHome("~/Downloads").size() > std::string("/Downloads").size(), "home prefix added");
+
+    // --- list_files: uses a temporary folder, never real user files ---
+    {
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() /
+                             ("easy_test_" + std::to_string(std::random_device{}()));
+        fs::create_directories(dir / "subfolder");
+        for (const char* name : {"a.pdf", "B.PDF", "c.txt", ".hidden.pdf"}) {
+            std::ofstream(dir / name) << "test";
+        }
+
+        easy::actions::ListFilesAction list;
+        check(list.name() == "list_files", "list_files name");
+        check(list.risk() == easy::core::RiskLevel::Safe, "list_files is Safe");
+
+        auto res = list.run({{"folder", dir.string()}, {"pattern", "*.pdf"}});
+        check(res.ok, "list_files succeeds");
+        check(res.outputs.size() == 2, "finds 2 pdfs (case-insensitive, skips hidden)");
+
+        res = list.run({{"folder", dir.string()}});
+        check(res.ok && res.outputs.size() == 3, "no pattern lists all visible files, not folders");
+
+        res = list.run({{"folder", (dir / "missing").string()}});
+        check(!res.ok, "missing folder gives error");
+
+        res = list.run({});
+        check(!res.ok, "missing folder param gives error");
+
+        std::error_code ec;
+        fs::remove_all(dir, ec);   // clean up
     }
 
     if (failures == 0) std::cout << "All tests passed\n";
