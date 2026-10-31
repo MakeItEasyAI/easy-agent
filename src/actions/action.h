@@ -32,6 +32,12 @@ public:
     // Safe for some values (e.g. an app you allowed) and Confirm for others.
     virtual core::RiskLevel riskFor(const Params& /*params*/) const { return risk(); }
 
+    // Quick check of the params BEFORE anything runs (used by the Validator on
+    // AI-written recipes). Returns "" if fine, else a short reason that is sent
+    // back to the AI so it can fix the recipe. Params that are "$name"
+    // variables are not known yet and are skipped by the caller.
+    virtual std::string checkParams(const Params& /*params*/) const { return ""; }
+
     // Names of params that hold file/folder paths. The safety guard checks
     // every one of them against the allowed folders before the action runs.
     // Pure virtual on purpose: a new action cannot forget to declare them.

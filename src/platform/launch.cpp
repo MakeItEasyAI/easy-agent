@@ -1,5 +1,9 @@
 #include "platform/launch.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <filesystem>
 #include <vector>
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -58,6 +62,39 @@ LaunchResult openUrl(const std::string& url, const std::string& appName) {
     (void)url;
     (void)appName;
     return {false, "open_url is not supported on this system yet"};
+#endif
+}
+
+bool appExists(const std::string& appName) {
+#if defined(__APPLE__)
+    namespace fs = std::filesystem;
+    const char* home = std::getenv("HOME");
+    std::vector<fs::path> folders = {"/Applications", "/System/Applications",
+                                     "/System/Applications/Utilities",
+                                     "/Applications/Utilities"};
+    if (home != nullptr) folders.emplace_back(fs::path(home) / "Applications");
+
+    std::error_code ec;
+    for (const fs::path& folder : folders) {
+        if (fs::exists(folder / (appName + ".app"), ec)) return true;
+    }
+    // Names are case-insensitive on macOS: "google chrome" == "Google Chrome".
+    std::string wanted = appName + ".app";
+    std::transform(wanted.begin(), wanted.end(), wanted.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const fs::path& folder : folders) {
+        for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
+            std::string name = it->path().filename().string();
+            std::transform(name.begin(), name.end(), name.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (name == wanted) return true;
+        }
+        ec.clear();
+    }
+    return false;
+#else
+    (void)appName;
+    return true;
 #endif
 }
 
