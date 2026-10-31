@@ -5,11 +5,23 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Dependencies (downloaded at configure time, pinned to an exact version)
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Core library (everything except main) so tests can link it.
 add_library(easy_core
     src/cli/cli.cpp
+    src/storage/recipe_json.cpp
 )
 target_include_directories(easy_core PUBLIC src)
+target_link_libraries(easy_core PUBLIC nlohmann_json::nlohmann_json)
 target_compile_definitions(easy_core PUBLIC EASY_VERSION="${PROJECT_VERSION}")
 
 # Platform-specific sources are added here as they are implemented.
