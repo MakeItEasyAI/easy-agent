@@ -8,6 +8,7 @@
 
 #include "actions/action.h"
 #include "actions/list_files.h"
+#include "actions/move_files.h"
 #include "actions/path_utils.h"
 #include "core/planner.h"
 #include "core/recipe.h"
@@ -124,6 +125,54 @@ int main() {
 
         res = list.run({});
         check(!res.ok, "missing folder param gives error");
+
+        std::error_code ec;
+        fs::remove_all(dir, ec);   // clean up
+    }
+
+    // --- move_files: also in a temporary folder ---
+    {
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() /
+                             ("easy_test_" + std::to_string(std::random_device{}()));
+        const fs::path src = dir / "src";
+        const fs::path dest = dir / "dest";   // does not exist yet
+        fs::create_directories(src);
+        for (const char* name : {"a.pdf", "b.pdf"}) std::ofstream(src / name) << "test";
+
+        const std::string both = (src / "a.pdf").string() + "\n" + (src / "b.pdf").string();
+        easy::actions::MoveFilesAction move;
+        check(move.name() == "move_files", "move_files name");
+        check(move.risk() == easy::core::RiskLevel::Confirm, "move_files needs confirmation");
+
+        // Normal move: destination folder is created, files arrive, verify passes
+        easy::actions::Params p{{"files", both}, {"to", dest.string()}};
+        auto res = move.run(p);
+        check(res.ok, "move_files succeeds");
+        check(res.outputs.size() == 2, "two files reported moved");
+        check(fs::exists(dest / "a.pdf") && fs::exists(dest / "b.pdf"), "files arrived");
+        check(!fs::exists(src / "a.pdf") && !fs::exists(src / "b.pdf"), "files left source");
+        check(move.verify(p), "verify passes after move");
+
+        // Conflict: a.pdf already exists in dest -> nothing moved at all
+        std::ofstream(src / "a.pdf") << "new";
+        std::ofstream(src / "c.pdf") << "new";
+        const std::string conflict = (src / "c.pdf").string() + "\n" + (src / "a.pdf").string();
+        res = move.run({{"files", conflict}, {"to", dest.string()}});
+        check(!res.ok, "conflict is an error");
+        check(fs::exists(src / "c.pdf"), "nothing moved when one file conflicts");
+
+        // Missing source file -> error, nothing moved
+        res = move.run({{"files", (src / "nope.pdf").string()}, {"to", dest.string()}});
+        check(!res.ok, "missing source file is an error");
+
+        // Bad params
+        check(!move.run({{"to", dest.string()}}).ok, "missing files param is an error");
+        check(!move.run({{"files", both}}).ok, "missing to param is an error");
+
+        // Empty list (e.g. list_files found nothing) is fine
+        res = move.run({{"files", ""}, {"to", dest.string()}});
+        check(res.ok && res.outputs.empty(), "empty list moves nothing, ok");
 
         std::error_code ec;
         fs::remove_all(dir, ec);   // clean up
