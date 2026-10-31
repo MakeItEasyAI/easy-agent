@@ -23,6 +23,12 @@ public:
     virtual ~Action() = default;
     virtual std::string name() const = 0;
     virtual core::RiskLevel risk() const = 0;
+
+    // Names of params that hold file/folder paths. The safety guard checks
+    // every one of them against the allowed folders before the action runs.
+    // Pure virtual on purpose: a new action cannot forget to declare them.
+    virtual std::vector<std::string> pathParams() const = 0;
+
     virtual ActionResult run(const Params& params) = 0;
     virtual bool verify(const Params& params) = 0;   // did it actually work?
 };

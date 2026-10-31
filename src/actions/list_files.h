@@ -14,6 +14,7 @@ class ListFilesAction : public Action {
 public:
     std::string name() const override { return "list_files"; }
     core::RiskLevel risk() const override { return core::RiskLevel::Safe; }
+    std::vector<std::string> pathParams() const override { return {"folder"}; }
     ActionResult run(const Params& params) override;
     bool verify(const Params& params) override;
 };
