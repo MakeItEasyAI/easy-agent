@@ -24,7 +24,8 @@ private:
     std::map<std::string, std::unique_ptr<Action>> actions_;
 };
 
-// Registry with all built-in actions (list_files, move_files, ...).
-ActionRegistry makeDefaultRegistry();
+// Registry with all built-in actions (list_files, move_files, open_app, open_url).
+// allowedApps: apps that open_app may start without asking (from config).
+ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps = {});
 
 }  // namespace easy::actions

@@ -13,6 +13,7 @@
 #include "actions/action.h"
 #include "actions/list_files.h"
 #include "actions/move_files.h"
+#include "actions/open_actions.h"
 #include "actions/registry.h"
 #include "cli/console_confirmer.h"
 #include "core/confirmer.h"
@@ -758,6 +759,55 @@ int main() {
         check(withModel.config && withModel.config->model == "gemini,ollama", "config model read");
         check(!easy::storage::parseConfig(R"({"allowed_folders": ["~/D"], "model": 5})").config,
               "non-text model rejected");
+    }
+
+    // --- open_app / open_url (never actually opens anything in tests) ---
+    {
+        using namespace easy::actions;
+        check(isSafeAppName("Google Chrome") && isSafeAppName("Visual Studio Code"),
+              "normal app names are safe");
+        check(!isSafeAppName("Chrome; rm -rf ~"), "shell characters rejected");
+        check(!isSafeAppName("-n"), "option-like name rejected");
+        check(!isSafeAppName("") && !isSafeAppName(std::string(65, 'a')), "empty/too long rejected");
+        check(!isSafeAppName("../../bin/sh"), "path-like name rejected");
+
+        check(isSafeUrl("https://youtube.com") && isSafeUrl("http://example.com/a?b=c"),
+              "http/https URLs are safe");
+        check(isSafeUrl("HTTPS://GITHUB.COM"), "scheme is case-insensitive");
+        check(!isSafeUrl("file:///etc/passwd"), "file:// rejected");
+        check(!isSafeUrl("javascript:alert(1)"), "javascript: rejected");
+        check(!isSafeUrl("youtube.com"), "missing scheme rejected");
+        check(!isSafeUrl("https://"), "no address rejected");
+        check(!isSafeUrl("https://a.com b"), "spaces rejected");
+
+        OpenAppAction openApp({"Google Chrome"});
+        check(openApp.riskFor({{"app", "google chrome"}}) == easy::core::RiskLevel::Safe,
+              "allowed app is Safe (case-insensitive)");
+        check(openApp.riskFor({{"app", "Terminal"}}) == easy::core::RiskLevel::Confirm,
+              "other apps need confirmation");
+        check(OpenAppAction{}.riskFor({{"app", "Google Chrome"}}) == easy::core::RiskLevel::Confirm,
+              "no allowed apps -> always confirm");
+        check(OpenUrlAction{}.risk() == easy::core::RiskLevel::Confirm, "open_url always confirms");
+
+        check(!openApp.run({}).ok, "open_app without app fails");
+        check(!openApp.run({{"app", "Chrome; rm -rf ~"}}).ok, "unsafe app name never launched");
+        check(!openApp.run({{"app", "NoSuchAppEasyAgentTest"}}).ok, "missing app reports failure");
+        OpenUrlAction openUrl;
+        check(!openUrl.run({{"url", "file:///etc/passwd"}}).ok, "unsafe URL never opened");
+        check(!openUrl.run({}).ok, "open_url without url fails");
+
+        const auto registry = makeDefaultRegistry();
+        check(registry.find("open_app") && registry.find("open_url"), "open actions registered");
+    }
+
+    // --- config allowed_apps ---
+    {
+        const auto cfg = easy::storage::parseConfig(
+            R"({"allowed_folders": ["~/Downloads"], "allowed_apps": ["Google Chrome"]})");
+        check(cfg.config && cfg.config->allowed_apps.size() == 1, "allowed_apps read");
+        check(!easy::storage::parseConfig(R"({"allowed_folders": ["~/D"], "allowed_apps": [1]})")
+                   .config,
+              "bad allowed_apps rejected");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";

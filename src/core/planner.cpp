@@ -58,6 +58,13 @@ std::string LlmPlanner::buildPrompt(const std::string& task) const {
            "\"to\": \"~/Pictures/Old\"}}\n"
            "]}\n"
            "\n"
+           "Another example:\n"
+           "Task: Open github.com in Safari\n"
+           "{\"id\": \"open_github\", \"task\": \"Open github.com in Safari\", \"steps\": [\n"
+           "  {\"action\": \"open_url\", \"params\": {\"url\": \"https://github.com\", "
+           "\"app\": \"Safari\"}}\n"
+           "]}\n"
+           "\n"
            "Task: " +
            task + "\n";
 }

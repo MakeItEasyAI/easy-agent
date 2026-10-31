@@ -41,6 +41,14 @@ ConfigLoadResult parseConfig(const std::string& jsonText) {
         if (!j["model"].is_string()) return fail("\"model\" must be text, e.g. \"gemini,ollama\"");
         config.model = j["model"].get<std::string>();
     }
+    if (j.contains("allowed_apps")) {
+        if (!j["allowed_apps"].is_array()) return fail("\"allowed_apps\" must be a list of app names");
+        for (const auto& app : j["allowed_apps"]) {
+            if (!app.is_string() || app.get<std::string>().empty())
+                return fail("every entry in \"allowed_apps\" must be an app name");
+            config.allowed_apps.push_back(app.get<std::string>());
+        }
+    }
     return {std::move(config), ""};
 }
 
@@ -68,6 +76,7 @@ std::string saveConfigFile(const std::string& path, const Config& config) {
 
     nlohmann::json j = {{"allowed_folders", config.allowed_folders}};
     if (!config.model.empty()) j["model"] = config.model;
+    if (!config.allowed_apps.empty()) j["allowed_apps"] = config.allowed_apps;
     std::ofstream out(path, std::ios::trunc);
     if (!out) return "cannot write " + path;
     out << j.dump(2) << "\n";
