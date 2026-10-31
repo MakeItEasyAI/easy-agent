@@ -1,5 +1,6 @@
 #include "actions/registry.h"
 
+#include "actions/browser_actions.h"
 #include "actions/list_files.h"
 #include "actions/move_files.h"
 #include "actions/open_actions.h"
@@ -22,12 +23,17 @@ std::vector<const Action*> ActionRegistry::all() const {
     return out;   // std::map keeps keys sorted, so this is sorted by name
 }
 
-ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps) {
+ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps,
+                                   std::shared_ptr<BrowserSession> browser) {
+    if (!browser) browser = std::make_shared<BrowserSession>();
     ActionRegistry registry;
     registry.add(std::make_unique<ListFilesAction>());
     registry.add(std::make_unique<MoveFilesAction>());
     registry.add(std::make_unique<OpenAppAction>(allowedApps));
     registry.add(std::make_unique<OpenUrlAction>());
+    registry.add(std::make_unique<BrowserOpenAction>(browser));
+    registry.add(std::make_unique<BrowserFillAction>(browser));
+    registry.add(std::make_unique<BrowserClickAction>(browser));
     return registry;
 }
 

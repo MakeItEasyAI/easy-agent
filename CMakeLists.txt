@@ -26,6 +26,10 @@ add_library(easy_core
     src/actions/move_files.cpp
     src/actions/registry.cpp
     src/actions/open_actions.cpp
+    src/actions/browser_actions.cpp
+    src/browser/websocket.cpp
+    src/browser/cdp.cpp
+    src/browser/chrome.cpp
     src/platform/launch.cpp
     src/core/safety_guard.cpp
     src/core/replay_engine.cpp

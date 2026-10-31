@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "actions/browser_actions.h"
 #include "actions/registry.h"
 #include "cli/console_confirmer.h"
 #include "core/planner.h"
@@ -260,13 +261,25 @@ private:
 };
 
 // Runs a recipe through the safety guard + confirmations. Prints progress.
-bool runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer) {
-    const auto registry = actions::makeDefaultRegistry(config.allowed_apps);
+// If the recipe used the agent's browser, it stays open for you to review
+// (and submit yourself), and is closed when you press Enter.
+bool runRecipe(core::Recipe& recipe, const storage::Config& config, ConsoleConfirmer& confirmer) {
+    auto browser = std::make_shared<actions::BrowserSession>();
+    const auto registry = actions::makeDefaultRegistry(config.allowed_apps, browser);
     const core::FolderSafetyGuard guard(config.allowed_folders);
     core::SimpleReplayEngine engine(registry, guard, confirmer, std::cout);
 
     std::cout << "Running " << recipe.id << " (" << recipe.steps.size() << " steps)\n";
     const core::ReplayResult result = engine.replay(recipe);
+
+    if (browser->started()) {
+        std::cout << std::flush;
+        confirmer.askLine(
+            "\nThe agent's browser is open. Check the page and submit it yourself if you want.\n"
+            "Press Enter here when you are done (this closes the agent's browser).\n>");
+        browser->close();
+    }
+
     if (!result.ok) {
         std::cerr << "Stopped: " << result.message << "\n";
         return false;
