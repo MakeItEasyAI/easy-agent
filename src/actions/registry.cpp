@@ -3,6 +3,7 @@
 #include "actions/list_files.h"
 #include "actions/move_files.h"
 #include "actions/open_actions.h"
+#include "actions/ui_actions.h"
 
 namespace easy::actions {
 
@@ -28,6 +29,8 @@ ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps) 
     registry.add(std::make_unique<MoveFilesAction>());
     registry.add(std::make_unique<OpenAppAction>(allowedApps));
     registry.add(std::make_unique<OpenUrlAction>());
+    registry.add(std::make_unique<UiFillAction>(allowedApps));
+    registry.add(std::make_unique<UiClickAction>());
     return registry;
 }
 
