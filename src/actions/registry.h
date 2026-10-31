@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "actions/action.h"
 
@@ -15,6 +16,9 @@ class ActionRegistry {
 public:
     void add(std::unique_ptr<Action> action);
     Action* find(const std::string& name) const;   // nullptr if not registered
+
+    // All registered actions, sorted by name (used to describe them to the AI).
+    std::vector<const Action*> all() const;
 
 private:
     std::map<std::string, std::unique_ptr<Action>> actions_;
