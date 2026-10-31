@@ -17,6 +17,10 @@ public:
     // added (_2, _3, ...) and recipe.id is updated. Returns "" or an error.
     virtual std::string save(core::Recipe& recipe) = 0;
 
+    // Overwrites the saved recipe with the same id (used when the user fixed
+    // it). Saves it as new if it does not exist yet. Returns "" or an error.
+    virtual std::string replace(core::Recipe& recipe) = 0;
+
     virtual std::optional<core::Recipe> load(const std::string& id) = 0;
     virtual std::vector<core::Recipe> list() = 0;   // sorted by id
 
@@ -29,11 +33,14 @@ public:
     explicit FileRecipeStore(std::string folder) : folder_(std::move(folder)) {}
 
     std::string save(core::Recipe& recipe) override;
+    std::string replace(core::Recipe& recipe) override;
     std::optional<core::Recipe> load(const std::string& id) override;
     std::vector<core::Recipe> list() override;
     std::optional<core::Recipe> findByTask(const std::string& task) override;
 
 private:
+    std::string writeFile(const core::Recipe& recipe);   // atomic: temp file + rename
+
     std::string folder_;
 };
 

@@ -260,7 +260,8 @@ private:
 };
 
 // Runs a recipe through the safety guard + confirmations. Prints progress.
-bool runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer) {
+// Returns "" when it finished, otherwise why it stopped.
+std::string runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer) {
     const auto registry = actions::makeDefaultRegistry(config.allowed_apps);
     const core::FolderSafetyGuard guard(config.allowed_folders);
     core::SimpleReplayEngine engine(registry, guard, confirmer, std::cout);
@@ -268,11 +269,12 @@ bool runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confir
     std::cout << "Running " << recipe.id << " (" << recipe.steps.size() << " steps)\n";
     const core::ReplayResult result = engine.replay(recipe);
     if (!result.ok) {
-        std::cerr << "Stopped: " << result.message << "\n";
-        return false;
+        std::cout << std::flush;
+        std::cerr << "Stopped: " << result.message << std::endl;
+        return result.message.empty() ? "stopped" : result.message;
     }
     std::cout << "Done: " << recipe.id << " (" << result.steps_done << " steps)\n";
-    return true;
+    return "";
 }
 
 // ---------------- commands ----------------
@@ -293,66 +295,94 @@ int learnCommand(int argc, char** argv) {
 
     storage::FileRecipeStore store(storage::defaultRecipesDir());
 
-    // 1. Already learned? Run it without AI.
+    // The AI is started only when it is needed (a new task, or a change).
+    std::unique_ptr<AiSession> ai;
+    auto getAi = [&]() -> AiSession* {
+        if (!ai) ai = AiSession::create(chooseModelSpec(modelSpec, config->model));
+        return ai.get();
+    };
+
+    // 1. Already learned? Use the saved recipe (no AI). Otherwise ask the AI.
+    std::optional<core::Recipe> recipe;
+    std::string savedId;
+    int savedVersion = 0;
     if (auto saved = store.findByTask(task)) {
         std::cout << "Found saved recipe \"" << saved->id << "\" for this task. No AI needed.\n";
-        return runRecipe(*saved, *config, confirmer) ? 0 : 1;
+        savedId = saved->id;
+        savedVersion = saved->version;
+        recipe = std::move(saved);
+    } else {
+        if (!getAi()) return 1;
+        recipe = ai->plan(task);
     }
+    bool changed = false;   // true once the user changed the plan
 
-    // 2. New task: ask the AI.
-    auto ai = AiSession::create(chooseModelSpec(modelSpec, config->model));
-    if (!ai) return 1;
-    auto recipe = ai->plan(task);
-
-    // Review loop: run the plan, or tell the AI what to change (also when the
-    // AI could not make a plan at all). Every new plan is checked again.
-    constexpr int kMaxChanges = 3;
+    // 2. Review loop. Ends only when the recipe ran fine or the user cancels
+    //    (Enter with no text). Saying "n", or a step failing, asks what to change.
+    constexpr int kMaxChanges = 5;
     for (int changes = 0;; ++changes) {
         std::string question;
+        std::string lastProblem;
         if (recipe) {
-            recipe->task = task;   // store the user's words, so the same request matches next time
+            if (savedId.empty()) recipe->task = task;   // store the user's words for next time
             std::cout << "\n";
             printRecipe(*recipe);
             std::cout << "\n";
-            if (confirmer.confirm("Run this recipe?")) break;
-            question = "What should change? (Enter to cancel)\n>";
+            if (confirmer.confirm("Run this recipe?")) {
+                lastProblem = runRecipe(*recipe, *config, confirmer);
+                if (lastProblem.empty()) break;   // it worked
+                question = "What should change? (Enter to stop)\n>";
+            } else {
+                question = "What should change? (Enter to cancel)\n>";
+            }
         } else {
-            if (ai->lastFailureWasModel()) return 1;   // a note cannot fix a model/network problem
+            if (ai && ai->lastFailureWasModel()) return 1;   // a note cannot fix a model/network problem
             question = "Tell the AI more about what you want (Enter to cancel)\n>";
         }
 
         if (changes == kMaxChanges) {
-            std::cout << "Stopped after " << kMaxChanges
-                      << " changes. Not run, not saved. Try rewording the task.\n";
+            std::cout << "Stopped after " << kMaxChanges << " changes. Try rewording the task.\n";
             return 1;
         }
         const std::string feedback = confirmer.askLine(question);
         if (feedback.empty()) {
-            std::cout << "Not run, not saved.\n";
+            if (!savedId.empty()) std::cout << "Cancelled. The saved recipe was not changed.\n";
+            else std::cout << "Cancelled. Nothing was saved.\n";
             return 1;
         }
+        if (!getAi()) return 1;
 
-        auto next = recipe ? ai->revise(task, *recipe, feedback) : ai->planWithNote(task, feedback);
+        const std::string note =
+            lastProblem.empty() ? feedback : feedback + " (the last run stopped with: " + lastProblem + ")";
+        auto next = recipe ? ai->revise(task, *recipe, note) : ai->planWithNote(task, note);
         if (next) {
+            if (!savedId.empty()) {   // fixing a saved recipe: keep its name and original task
+                next->id = savedId;
+                next->task = recipe ? recipe->task : task;
+                next->version = savedVersion + 1;
+            }
             recipe = std::move(next);
+            changed = true;
         } else if (recipe) {
             std::cout << "Keeping the previous plan.\n";
         }
     }
 
-    // 3. Run it. Only save recipes that actually worked.
-    if (!runRecipe(*recipe, *config, confirmer)) {
-        std::cerr << "Recipe NOT saved because it did not finish.\n";
-        return 1;
-    }
-
-    const std::string error = store.save(*recipe);
+    // 3. It worked. Save new recipes; update a saved one only if the user changed it.
+    if (!savedId.empty() && !changed) return 0;
+    const bool updating = !savedId.empty();
+    const std::string error = updating ? store.replace(*recipe) : store.save(*recipe);
     if (!error.empty()) {
         std::cerr << "Warning: task done, but recipe not saved: " << error << "\n";
         return 1;
     }
-    std::cout << "\nSaved as \"" << recipe->id << "\". Next time it runs instantly, without AI:\n"
-              << "  easy run " << recipe->id << "\n";
+    if (updating) {
+        std::cout << "\nUpdated saved recipe \"" << recipe->id << "\" (v" << recipe->version
+                  << "). Next time it runs the fixed version, without AI.\n";
+    } else {
+        std::cout << "\nSaved as \"" << recipe->id << "\". Next time it runs instantly, without AI:\n"
+                  << "  easy run " << recipe->id << "\n";
+    }
     return 0;
 }
 
@@ -371,7 +401,7 @@ int runCommand(int argc, char** argv) {
     const auto config = loadConfigOrSetup(configPath, confirmer);
     if (!config) return 1;
 
-    return runRecipe(*recipe, *config, confirmer) ? 0 : 1;
+    return runRecipe(*recipe, *config, confirmer).empty() ? 0 : 1;
 }
 
 // easy plan "<task>": show what the AI would do. Runs and saves nothing.
