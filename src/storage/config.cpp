@@ -1,5 +1,6 @@
 #include "storage/config.h"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -41,13 +42,42 @@ ConfigLoadResult parseConfig(const std::string& jsonText) {
 
 ConfigLoadResult loadConfigFile(const std::string& path) {
     std::ifstream file(path);
-    if (!file) return fail("config not found: " + path);
+    if (!file) {
+        ConfigLoadResult missing = fail("config not found: " + path);
+        std::error_code ec;
+        missing.not_found = !std::filesystem::exists(path, ec);
+        return missing;
+    }
 
     std::stringstream buffer;
     buffer << file.rdbuf();
     ConfigLoadResult result = parseConfig(buffer.str());
     if (!result.config) result.error = path + ": " + result.error;
     return result;
+}
+
+std::string saveConfigFile(const std::string& path, const Config& config) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    if (ec) return "cannot create folder for " + path + ": " + ec.message();
+
+    const nlohmann::json j = {{"allowed_folders", config.allowed_folders}};
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) return "cannot write " + path;
+    out << j.dump(2) << "\n";
+    return out ? "" : "cannot write " + path;
+}
+
+std::string tooBroadReason(const std::string& folder) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path p = fs::weakly_canonical(fs::absolute(actions::expandHome(folder), ec), ec);
+    const fs::path home = fs::weakly_canonical(actions::expandHome("~"), ec);
+    if (p.empty()) return "cannot understand this path";
+    if (p == p.root_path()) return "the whole disk is too broad";
+    if (!home.empty() && p == home) return "your whole home folder is too broad";
+    return "";
 }
 
 }  // namespace easy::storage

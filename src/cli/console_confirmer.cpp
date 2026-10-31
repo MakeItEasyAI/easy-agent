@@ -22,4 +22,14 @@ bool ConsoleConfirmer::confirm(const std::string& question) {
     return answer == "y" || answer == "yes";
 }
 
+std::string ConsoleConfirmer::askLine(const std::string& question) {
+    out_ << question << " " << std::flush;
+    std::string answer;
+    if (!std::getline(in_, answer)) return "";
+    const auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    answer.erase(answer.begin(), std::find_if(answer.begin(), answer.end(), notSpace));
+    answer.erase(std::find_if(answer.rbegin(), answer.rend(), notSpace).base(), answer.end());
+    return answer;
+}
+
 }  // namespace easy::cli

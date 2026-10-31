@@ -15,6 +15,9 @@ public:
 
     bool confirm(const std::string& question) override;
 
+    // Asks for a line of text. Returns "" on empty answer or no input.
+    std::string askLine(const std::string& question);
+
 private:
     std::istream& in_;
     std::ostream& out_;
