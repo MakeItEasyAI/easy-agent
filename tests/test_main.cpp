@@ -5,10 +5,13 @@
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <sstream>
 
 #include "actions/action.h"
 #include "actions/list_files.h"
 #include "actions/move_files.h"
+#include "cli/console_confirmer.h"
+#include "core/confirmer.h"
 #include "actions/path_utils.h"
 #include "core/planner.h"
 #include "core/recipe.h"
@@ -176,6 +179,86 @@ int main() {
 
         std::error_code ec;
         fs::remove_all(dir, ec);   // clean up
+    }
+
+    // --- pathParams: every action declares its path params ---
+    check(easy::actions::ListFilesAction{}.pathParams() == std::vector<std::string>{"folder"},
+          "list_files declares folder as a path");
+    check(easy::actions::MoveFilesAction{}.pathParams() ==
+              std::vector<std::string>{"files", "to"},
+          "move_files declares files and to as paths");
+
+    // --- FolderSafetyGuard ---
+    {
+        namespace fs = std::filesystem;
+        using easy::core::Decision;
+        using easy::core::RiskLevel;
+
+        const fs::path dir = fs::temp_directory_path() /
+                             ("easy_test_" + std::to_string(std::random_device{}()));
+        const fs::path allowed = dir / "allowed";
+        const fs::path outside = dir / "outside";
+        fs::create_directories(allowed);
+        fs::create_directories(outside);
+        fs::create_directories(dir / "allowed_evil");
+
+        easy::core::FolderSafetyGuard guard({allowed.string()});
+        const std::string inFile = (allowed / "a.pdf").string();
+        const std::string outFile = (outside / "a.pdf").string();
+
+        check(guard.check(RiskLevel::Safe, {inFile}).decision == Decision::Allow,
+              "safe action inside allowed folder is allowed");
+        check(guard.check(RiskLevel::Confirm, {inFile}).decision == Decision::AskUser,
+              "confirm action inside allowed folder asks user");
+        check(guard.check(RiskLevel::Blocked, {inFile}).decision == Decision::Deny,
+              "blocked action is always denied");
+        check(guard.check(RiskLevel::Safe, {outFile}).decision == Decision::Deny,
+              "path outside allowed folders is denied");
+        check(guard.check(RiskLevel::Safe, {inFile + "\n" + outFile}).decision == Decision::Deny,
+              "one bad path in a multi-line list denies the whole step");
+        check(guard.check(RiskLevel::Safe, {}).decision == Decision::Allow,
+              "safe action with no paths is allowed");
+
+        // Tricks
+        check(!guard.isAllowedPath((allowed / ".." / "outside" / "a.pdf").string()),
+              "'..' escape is denied");
+        check(!guard.isAllowedPath((dir / "allowed_evil" / "a.pdf").string()),
+              "similar folder name prefix is denied");
+        check(guard.isAllowedPath(allowed.string()), "the allowed folder itself is allowed");
+        check(guard.isAllowedPath((allowed / "new" / "sub" / "x.pdf").string()),
+              "not-yet-existing path inside allowed folder is allowed");
+        check(!guard.isAllowedPath(""), "empty path is denied");
+
+        std::error_code linkEc;
+        fs::create_directory_symlink(outside, allowed / "link", linkEc);
+        if (!linkEc) {   // creating links can need extra rights on Windows; skip there
+            check(!guard.isAllowedPath((allowed / "link" / "a.pdf").string()),
+                  "symlink pointing outside is denied");
+        }
+
+        // Fail closed: no allowed folders -> any path denied
+        easy::core::FolderSafetyGuard empty({});
+        check(empty.check(RiskLevel::Safe, {inFile}).decision == Decision::Deny,
+              "no allowed folders means paths are denied");
+
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    }
+
+    // --- ConsoleConfirmer: only y/yes means yes ---
+    {
+        auto answer = [](const std::string& input) {
+            std::istringstream in(input);
+            std::ostringstream out;
+            easy::cli::ConsoleConfirmer confirmer(in, out);
+            return confirmer.confirm("Move 2 files?");
+        };
+        check(answer("y\n"), "y is yes");
+        check(answer("  YES \n"), "YES with spaces is yes");
+        check(!answer("n\n"), "n is no");
+        check(!answer("\n"), "empty answer is no");
+        check(!answer(""), "no input is no");
+        check(!answer("yep\n"), "anything else is no");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";
