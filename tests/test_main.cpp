@@ -703,6 +703,21 @@ int main() {
         check(found.has_value(), "findByTask ignores case/spaces/trailing dot");
         check(!store.findByTask("move photos to pictures"), "different task not matched");
 
+        // replace: fixing a saved recipe keeps its name and bumps the version
+        easy::core::Recipe fixed = *store.load("move_bills");
+        fixed.version = 2;
+        fixed.steps.pop_back();
+        fixed.steps.push_back(Step{"move_files", {{"files", "$pdfs"}, {"to", "~/Documents/Bills"}}, ""});
+        check(store.replace(fixed).empty() && fixed.id == "move_bills", "replace keeps the same name");
+        const auto reloaded = store.load("move_bills");
+        check(reloaded && reloaded->version == 2 &&
+                  reloaded->steps.back().params.at("to") == "~/Documents/Bills",
+              "replaced recipe is read back with the fix");
+        check(store.list().size() == 3, "replace does not add a new recipe");
+        easy::core::Recipe badName = fixed;
+        badName.id = "../evil";
+        check(!store.replace(badName).empty(), "replace refuses unsafe names");
+
         std::error_code ec;
         fs::remove_all(dir, ec);
     }

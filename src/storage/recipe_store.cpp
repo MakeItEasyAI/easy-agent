@@ -66,6 +66,20 @@ std::string FileRecipeStore::save(core::Recipe& recipe) {
         if (n > 999) return "too many recipes named " + base;
         recipe.id = base + "_" + std::to_string(n);
     }
+    return writeFile(recipe);
+}
+
+std::string FileRecipeStore::replace(core::Recipe& recipe) {
+    if (!isValidRecipeId(recipe.id)) return "not a valid recipe name: " + recipe.id;
+    std::error_code ec;
+    if (!fs::exists(fs::path(folder_) / (recipe.id + ".json"), ec)) return save(recipe);
+    return writeFile(recipe);
+}
+
+std::string FileRecipeStore::writeFile(const core::Recipe& recipe) {
+    std::error_code ec;
+    fs::create_directories(folder_, ec);
+    if (ec) return "cannot create " + folder_ + ": " + ec.message();
 
     // Write to a temporary file first, then rename: a crash never leaves a
     // half-written recipe behind.
