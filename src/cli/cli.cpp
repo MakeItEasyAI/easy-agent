@@ -1,6 +1,8 @@
 #include "cli/cli.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -16,6 +18,7 @@
 #include "core/validator.h"
 #include "models/gemini_provider.h"
 #include "models/model_factory.h"
+#include "platform/ui_automation.h"
 #include "storage/config.h"
 #include "storage/recipe_json.h"
 #include "storage/storage.h"
@@ -27,6 +30,8 @@ namespace {
 void printUsage() {
     std::cout << "easy - teach your computer a task once, run it forever\n\n"
                  "Usage:\n"
+                 "  easy                            start a session: type tasks one after another\n"
+                 "                                  until you type exit\n"
                  "  easy learn \"<task>\"            reuse a saved recipe for this task, or ask the\n"
                  "                                  AI for one, run it, and save it if it works\n"
                  "  easy run <name | file.json>     run a saved recipe or a recipe file (no AI)\n"
@@ -54,6 +59,26 @@ void printConfigHelp(const std::string& path) {
                  "  }\n";
 }
 
+// One line per recipe for the session history, e.g.
+//   open_url(url=https://www.linkedin.com/, app=Google Chrome)
+std::string describeSteps(const core::Recipe& r) {
+    std::string out;
+    for (const auto& step : r.steps) {
+        if (!out.empty()) out += "; ";
+        out += step.action + "(";
+        bool first = true;
+        for (const auto& [key, value] : step.params) {
+            std::string v = value;
+            std::replace(v.begin(), v.end(), '\n', ' ');
+            if (v.size() > 80) v = v.substr(0, 77) + "...";
+            out += (first ? "" : ", ") + key + "=" + v;
+            first = false;
+        }
+        out += ")";
+    }
+    return out;
+}
+
 void printRecipe(const core::Recipe& r) {
     std::cout << "Recipe: " << r.id << " (v" << r.version << ")\n";
     if (!r.task.empty()) std::cout << "Task:   " << r.task << "\n";
@@ -74,9 +99,9 @@ void printRecipe(const core::Recipe& r) {
 //   --config <path>   and   --model <spec>
 // Returns false (after printing why) on bad arguments.
 bool parseArgs(int argc, char** argv, std::string& positional, std::string& configPath,
-               std::string& modelSpec) {
+               std::string& modelSpec, int firstArg = 2) {
     configPath = storage::defaultConfigPath();
-    for (int i = 2; i < argc; ++i) {
+    for (int i = firstArg; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--config" || arg == "--model") {
             if (i + 1 >= argc) {
@@ -226,6 +251,9 @@ public:
     // down...): a note from the user cannot fix that.
     bool lastFailureWasModel() const { return lastError_.rfind("model error", 0) == 0; }
 
+    // What happened earlier in the session, sent with every prompt.
+    void setContext(const std::string& context) { planner_.setContext(context); }
+
 private:
     explicit AiSession(std::unique_ptr<models::ModelProvider> model)
         : model_(std::move(model)),
@@ -280,6 +308,10 @@ std::string runRecipe(core::Recipe& recipe, const storage::Config& config, core:
 // ---------------- commands ----------------
 
 // easy learn "<task>": saved recipe first, AI only if needed.
+int learnTask(const std::string& task, const storage::Config& config, const std::string& modelSpec,
+              ConsoleConfirmer& confirmer, std::unique_ptr<AiSession>& ai,
+              const std::string& context = "", std::string* outcome = nullptr);
+
 int learnCommand(int argc, char** argv) {
     std::string task, configPath, modelSpec;
     if (!parseArgs(argc, argv, task, configPath, modelSpec)) return 1;
@@ -292,13 +324,27 @@ int learnCommand(int argc, char** argv) {
     ConsoleConfirmer confirmer;
     const auto config = loadConfigOrSetup(configPath, confirmer);
     if (!config) return 1;
+    std::unique_ptr<AiSession> ai;
+    return learnTask(task, *config, modelSpec, confirmer, ai);
+}
 
+// One task: saved recipe first, AI only if needed. `ai` is started on first
+// use and kept, so a session can reuse the same (already loaded) model.
+// context: what happened earlier in the session (for follow-up tasks).
+// outcome: filled with a short summary of what happened (for the next task's context).
+int learnTask(const std::string& task, const storage::Config& config, const std::string& modelSpec,
+              ConsoleConfirmer& confirmer, std::unique_ptr<AiSession>& ai,
+              const std::string& context, std::string* outcome) {
     storage::FileRecipeStore store(storage::defaultRecipesDir());
+    auto report = [&](const std::string& what) {
+        if (outcome) *outcome = what;
+    };
+    report("not done");
 
     // The AI is started only when it is needed (a new task, or a change).
-    std::unique_ptr<AiSession> ai;
     auto getAi = [&]() -> AiSession* {
-        if (!ai) ai = AiSession::create(chooseModelSpec(modelSpec, config->model));
+        if (!ai) ai = AiSession::create(chooseModelSpec(modelSpec, config.model));
+        if (ai) ai->setContext(context);
         return ai.get();
     };
 
@@ -320,34 +366,46 @@ int learnCommand(int argc, char** argv) {
     // 2. Review loop. Ends only when the recipe ran fine or the user cancels
     //    (Enter with no text). Saying "n", or a step failing, asks what to change.
     constexpr int kMaxChanges = 5;
+    std::string lastRunProblem;   // why the last run stopped (for the session history)
     for (int changes = 0;; ++changes) {
         std::string question;
         std::string lastProblem;
         if (recipe) {
-            if (savedId.empty()) recipe->task = task;   // store the user's words for next time
+            // New recipes are saved under the user's words, so the same request
+            // matches next time. A follow-up ("now open it in the same window")
+            // only makes sense with the session history, so then keep the AI's
+            // self-contained description instead.
+            if (savedId.empty() && (context.empty() || recipe->task.empty())) recipe->task = task;
             std::cout << "\n";
             printRecipe(*recipe);
             std::cout << "\n";
             if (confirmer.confirm("Run this recipe?")) {
-                lastProblem = runRecipe(*recipe, *config, confirmer);
+                lastProblem = runRecipe(*recipe, config, confirmer);
                 if (lastProblem.empty()) break;   // it worked
+                lastRunProblem = lastProblem;
                 question = "What should change? (Enter to stop)\n>";
             } else {
                 question = "What should change? (Enter to cancel)\n>";
             }
         } else {
-            if (ai && ai->lastFailureWasModel()) return 1;   // a note cannot fix a model/network problem
+            if (ai && ai->lastFailureWasModel()) {   // a note cannot fix a model/network problem
+                report("could not plan (AI not reachable)");
+                return 1;
+            }
             question = "Tell the AI more about what you want (Enter to cancel)\n>";
         }
 
         if (changes == kMaxChanges) {
             std::cout << "Stopped after " << kMaxChanges << " changes. Try rewording the task.\n";
+            report("given up after several changes");
             return 1;
         }
         const std::string feedback = confirmer.askLine(question);
         if (feedback.empty()) {
             if (!savedId.empty()) std::cout << "Cancelled. The saved recipe was not changed.\n";
             else std::cout << "Cancelled. Nothing was saved.\n";
+            report(lastRunProblem.empty() ? "cancelled by the user before running"
+                                          : "stopped: " + lastRunProblem);
             return 1;
         }
         if (!getAi()) return 1;
@@ -369,6 +427,7 @@ int learnCommand(int argc, char** argv) {
     }
 
     // 3. It worked. Save new recipes; update a saved one only if the user changed it.
+    report("done: " + describeSteps(*recipe));
     if (!savedId.empty() && !changed) return 0;
     const bool updating = !savedId.empty();
     const std::string error = updating ? store.replace(*recipe) : store.save(*recipe);
@@ -454,12 +513,85 @@ int listCommand() {
     return 0;
 }
 
+void printSessionHelp() {
+    std::cout << "Type what you want done, in plain words, e.g.:\n"
+                 "  open linkedin in google chrome\n"
+                 "  move all PDFs from ~/Downloads/easy_test to ~/Documents/easy_bills\n"
+                 "Other commands:\n"
+                 "  list    show saved recipes\n"
+                 "  forget  forget this session's earlier tasks (start fresh)\n"
+                 "  help    show this help\n"
+                 "  exit    leave (also: quit, bye, or Ctrl+D)\n"
+                 "The AI remembers your last few tasks in this session, so you can say things\n"
+                 "like \"now open notifications in the same window\".\n";
+}
+
+// easy  (no arguments): an interactive session. Keeps asking for the next task
+// until you type exit. The AI model stays loaded between tasks.
+int sessionCommand(const std::string& configPath, const std::string& modelSpec) {
+    ConsoleConfirmer confirmer;
+    const auto config = loadConfigOrSetup(configPath, confirmer);
+    if (!config) return 1;
+
+    std::unique_ptr<AiSession> ai;   // started on the first task that needs it
+    std::deque<std::string> history; // what happened in this session (last few tasks)
+    constexpr std::size_t kHistory = 5;
+    const std::string spec = chooseModelSpec(modelSpec, config->model);
+    std::cout << "easy agent ready (AI: " << (spec.empty() ? "ollama (local)" : spec)
+              << "). Type a task, or: list, help, forget, exit\n";
+
+    while (true) {
+        const std::string line = confirmer.askLine("\n>");
+        if (line.empty()) {
+            if (confirmer.endOfInput()) break;   // Ctrl+D or no more input
+            continue;                            // just Enter: ask again
+        }
+        const std::string word = storage::normalizeTask(line);
+        if (word == "exit" || word == "quit" || word == "bye" || word == "q") break;
+        if (word == "help" || word == "?") {
+            printSessionHelp();
+            continue;
+        }
+        if (word == "list") {
+            listCommand();
+            continue;
+        }
+        if (word == "forget") {
+            history.clear();
+            std::cout << "Forgot this session's earlier tasks.\n";
+            continue;
+        }
+
+        std::string context;
+        for (std::size_t i = 0; i < history.size(); ++i) {
+            context += std::to_string(i + 1) + ". " + history[i] + "\n";
+        }
+        std::string outcome;
+        learnTask(line, *config, modelSpec, confirmer, ai, context, &outcome);   // prints how it went
+
+        history.push_back("task: \"" + line + "\" -> " + outcome);
+        if (history.size() > kHistory) history.pop_front();
+    }
+    std::cout << "Bye!\n";
+    return 0;
+}
+
 }  // namespace
 
 int run(int argc, char** argv) {
-    if (argc < 2) {
-        printUsage();
-        return 0;
+    // No command (or only options like --model): start an interactive session.
+    if (argc < 2 || std::string(argv[1]).rfind("--", 0) == 0) {
+        const std::string first = argc >= 2 ? argv[1] : "";
+        if (first != "--version" && first != "--help") {
+            std::string unused, configPath, modelSpec;
+            if (!parseArgs(argc, argv, unused, configPath, modelSpec, /*firstArg=*/1)) return 1;
+            if (!unused.empty()) {
+                std::cerr << "Unknown command: " << unused << "\n\n";
+                printUsage();
+                return 1;
+            }
+            return sessionCommand(configPath, modelSpec);
+        }
     }
 
     const std::string cmd = argv[1];
@@ -474,6 +606,21 @@ int run(int argc, char** argv) {
     if (cmd == "learn") return learnCommand(argc, argv);
     if (cmd == "run") return runCommand(argc, argv);
     if (cmd == "list") return listCommand();
+    if (cmd == "inspect") {
+        if (argc < 3) {
+            std::cerr << "Usage: easy inspect \"<app name>\"   e.g. easy inspect \"Google Chrome\"\n";
+            return 1;
+        }
+        std::string error;
+        const auto lines = platform::uiInspect(argv[2], error);
+        if (!error.empty()) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "What easy can see in " << argv[2] << "'s front window:\n";
+        for (const std::string& l : lines) std::cout << l << "\n";
+        return 0;
+    }
     if (cmd == "show") return showCommand(argc, argv);
     if (cmd == "plan") return planCommand(argc, argv);
 

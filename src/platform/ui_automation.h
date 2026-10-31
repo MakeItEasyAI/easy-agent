@@ -33,6 +33,10 @@ UiResult uiFill(const std::string& app, const std::string& field, const std::str
 // Press the button / link / choice whose text is `text` in `app`'s front window.
 UiResult uiClick(const std::string& app, const std::string& text, int waitSeconds = 15);
 
+// Diagnostic: what the agent can see in `app`'s front window (counts, whether
+// a web page area exists, and labels inside it). For `easy inspect "<app>"`.
+std::vector<std::string> uiInspect(const std::string& app, std::string& error);
+
 // ---- shared text helpers (no OS calls; unit-tested) ----
 
 // Lowercase, single spaces, no '*' marks (required-field stars), trimmed.

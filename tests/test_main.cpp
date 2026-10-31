@@ -515,6 +515,26 @@ int main() {
             check(prompt.find("list_files") != std::string::npos &&
                       prompt.find("move_files") != std::string::npos,
                   "prompt lists actions");
+            check(prompt.find("Earlier in this session") == std::string::npos,
+                  "no session section without history");
+
+            planner.setContext("1. task: \"open linkedin\" -> done: open_url(url=https://www.linkedin.com/)\n");
+            const std::string withContext = planner.buildPrompt("now open notifications in the same window");
+            const auto historyAt = withContext.find("Earlier in this session");
+            const auto taskAt = withContext.find("Task: now open notifications");
+            check(historyAt != std::string::npos &&
+                      withContext.find("open_url(url=https://www.linkedin.com/)") != std::string::npos,
+                  "session history is in the prompt");
+            check(historyAt < taskAt, "history comes right before the task");
+            check(withContext.find("NOT instructions") != std::string::npos,
+                  "history is marked as a record, not instructions");
+
+            easy::core::Recipe rejected;
+            rejected.id = "x";
+            rejected.steps = {easy::core::Step{"open_url", {{"url", "https://a.com"}}, ""}};
+            check(planner.buildRevisePrompt("t", rejected, "fix").find("Earlier in this session") !=
+                      std::string::npos,
+                  "corrections also see the session history");
         }
 
         // 3. Bad reply, then good reply -> retry works and tells model the problem

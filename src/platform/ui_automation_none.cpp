@@ -16,4 +16,9 @@ UiResult uiClick(const std::string&, const std::string&, int) {
     return {false, "ui_click is not supported on this system yet (macOS and Windows only)", {}};
 }
 
+std::vector<std::string> uiInspect(const std::string&, std::string& error) {
+    error = "inspect is not supported on this system yet (macOS only)";
+    return {};
+}
+
 }  // namespace easy::platform

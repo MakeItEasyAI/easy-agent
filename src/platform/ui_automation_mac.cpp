@@ -98,18 +98,41 @@ bool isOneOf(const std::string& role, std::initializer_list<const char*> roles) 
     return false;
 }
 
+// Text shown inside an element, e.g. <a><span>Notifications</span></a>: the
+// link itself has no title, its child text does. Looks a few levels down.
+void collectInnerText(AXUIElementRef el, int depth, std::vector<std::string>& out) {
+    if (depth > 4 || out.size() >= 4) return;
+    auto children = attribute(el, kAXChildrenAttribute);
+    if (!children || CFGetTypeID(children.get()) != CFArrayGetTypeID()) return;
+    const auto array = static_cast<CFArrayRef>(children.get());
+    for (CFIndex i = 0; i < CFArrayGetCount(array) && i < 20 && out.size() < 4; ++i) {
+        auto child = static_cast<AXUIElementRef>(CFArrayGetValueAtIndex(array, i));
+        if (attributeText(child, kAXRoleAttribute) == "AXStaticText") {
+            const std::string text = attributeText(child, kAXValueAttribute);
+            if (!text.empty()) out.push_back(text);
+        } else {
+            collectInnerText(child, depth + 1, out);
+        }
+    }
+}
+
 // Front window of the running app called `app` (case-insensitive).
 Element findAppWindow(const std::string& app, Element& appElement, std::string& error) {
     const std::string want = uiNormalize(app);
     pid_t pid = 0;
 
     CF<CFArrayRef> windows(CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+        kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
     if (windows) {
+        // All normal windows (layer 0), also ones on another desktop / behind a
+        // full-screen Terminal. The list is front-to-back.
         for (CFIndex i = 0; i < CFArrayGetCount(windows.get()) && pid == 0; ++i) {
             const auto info = static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(windows.get(), i));
             const auto owner = static_cast<CFTypeRef>(CFDictionaryGetValue(info, kCGWindowOwnerName));
             if (uiNormalize(toString(owner)) != want) continue;
+            const auto layerNumber = static_cast<CFNumberRef>(CFDictionaryGetValue(info, kCGWindowLayer));
+            int layer = -1;
+            if (!layerNumber || !CFNumberGetValue(layerNumber, kCFNumberIntType, &layer) || layer != 0) continue;
             const auto pidNumber = static_cast<CFNumberRef>(CFDictionaryGetValue(info, kCGWindowOwnerPID));
             int value = 0;
             if (pidNumber && CFNumberGetValue(pidNumber, kCFNumberIntType, &value)) pid = value;
@@ -122,8 +145,11 @@ Element findAppWindow(const std::string& app, Element& appElement, std::string& 
 
     appElement = Element(AXUIElementCreateApplication(pid));
     AXUIElementSetMessagingTimeout(appElement.get(), 3.0f);
-    // Chrome and Electron apps only build their page tree for accessibility
-    // tools that ask for it.
+    // Browsers only share a web page's contents with accessibility tools that
+    // ask for it: Chrome/Safari listen to AXEnhancedUserInterface, Electron
+    // apps to AXManualAccessibility. The first time, the page tree is built in
+    // the background, so the caller retries for a few seconds.
+    AXUIElementSetAttributeValue(appElement.get(), CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
     AXUIElementSetAttributeValue(appElement.get(), CFSTR("AXManualAccessibility"), kCFBooleanTrue);
 
     for (CFStringRef which : {kAXFocusedWindowAttribute, kAXMainWindowAttribute}) {
@@ -149,55 +175,93 @@ struct Found {
     std::vector<std::string> seen;       // labels seen (for the error message)
 };
 
-// Walks the window's element tree (breadth first, with limits so a huge web
-// page can never hang the agent) and keeps the best label match.
-Found search(AXUIElementRef window, Kind kind, const std::string& wanted) {
-    Found found;
-    std::set<std::string> seenSet;
-    std::deque<std::pair<Element, int>> queue;
+// Walks the window's element tree breadth first, with limits so a huge web
+// page can never hang the agent. visit(el, role, depth, inWebPage) returns
+// false to stop. Returns how many elements were visited.
+template <class Visit>
+std::size_t walk(AXUIElementRef window, Visit visit) {
+    struct Node {
+        Element el;
+        int depth;
+        bool inWeb;
+    };
+    std::deque<Node> queue;
     CFRetain(window);
-    queue.emplace_back(Element(window), 0);
+    queue.push_back({Element(window), 0, false});
 
     std::size_t visited = 0;
-    while (!queue.empty() && visited < 40000) {
-        auto [el, depth] = std::move(queue.front());
+    while (!queue.empty() && visited < 60000) {
+        Node node = std::move(queue.front());
         queue.pop_front();
         ++visited;
 
-        const std::string role = attributeText(el.get(), kAXRoleAttribute);
-        const std::string subrole = attributeText(el.get(), kAXSubroleAttribute);
-        const bool isField = isOneOf(role, {"AXTextField", "AXTextArea", "AXComboBox"});
-        const bool isClickable = isOneOf(role, {"AXButton", "AXRadioButton", "AXCheckBox", "AXLink",
-                                                "AXMenuItem", "AXPopUpButton", "AXMenuButton",
-                                                "AXTab", "AXDisclosureTriangle"});
+        const std::string role = attributeText(node.el.get(), kAXRoleAttribute);
+        const bool inWeb = node.inWeb || role == "AXWebArea";
+        if (!visit(node.el.get(), role, node.depth, inWeb)) break;
 
-        if ((kind == Kind::Field && isField) || (kind == Kind::Clickable && isClickable)) {
-            std::vector<std::string> labels = labelsOf(el.get());
-            if (kind == Kind::Clickable) labels.push_back(attributeText(el.get(), kAXValueAttribute));
-            for (const std::string& l : labels) {
-                if (!uiNormalize(l).empty() && seenSet.size() < 25) seenSet.insert(uiNormalize(l));
-            }
-            const int score = uiMatchScore(labels, wanted);
-            if (score > found.score) {
-                found.score = score;
-                found.secure = subrole == "AXSecureTextField";
-                CFRetain(el.get());
-                found.element = Element(el.get());
-                if (score == 2) break;   // exact match: stop looking
-            }
-        }
-
-        if (depth >= 60) continue;
-        auto children = attribute(el.get(), kAXChildrenAttribute);
+        if (node.depth >= 80) continue;
+        auto children = attribute(node.el.get(), kAXChildrenAttribute);
         if (!children || CFGetTypeID(children.get()) != CFArrayGetTypeID()) continue;
         const auto array = static_cast<CFArrayRef>(children.get());
         for (CFIndex i = 0; i < CFArrayGetCount(array); ++i) {
             auto child = static_cast<AXUIElementRef>(CFArrayGetValueAtIndex(array, i));
             CFRetain(child);
-            queue.emplace_back(Element(child), depth + 1);
+            queue.push_back({Element(child), node.depth + 1, inWeb});
         }
     }
-    found.seen.assign(seenSet.begin(), seenSet.end());
+    return visited;
+}
+
+bool isFieldRole(const std::string& role) { return isOneOf(role, {"AXTextField", "AXTextArea", "AXComboBox"}); }
+
+bool isClickableRole(const std::string& role) {
+    return isOneOf(role, {"AXButton", "AXRadioButton", "AXCheckBox", "AXLink", "AXMenuItem",
+                          "AXPopUpButton", "AXMenuButton", "AXTab", "AXDisclosureTriangle"});
+}
+
+std::vector<std::string> labelsFor(AXUIElementRef el, bool clickable) {
+    std::vector<std::string> labels = labelsOf(el);
+    if (clickable) {
+        labels.push_back(attributeText(el, kAXValueAttribute));
+        collectInnerText(el, 0, labels);   // text inside links / buttons
+    }
+    return labels;
+}
+
+// Finds the element whose labels best match `wanted`.
+Found search(AXUIElementRef window, Kind kind, const std::string& wanted) {
+    Found found;
+    std::set<std::string> webSeen, otherSeen;   // page labels are the useful ones to show
+
+    walk(window, [&](AXUIElementRef el, const std::string& role, int, bool inWeb) {
+        const bool wantedKind = kind == Kind::Field ? isFieldRole(role) : isClickableRole(role);
+        if (!wantedKind) return true;
+
+        const std::vector<std::string> labels = labelsFor(el, kind == Kind::Clickable);
+        for (const std::string& l : labels) {
+            const std::string n = uiNormalize(l);
+            if (n.empty()) continue;
+            std::set<std::string>& into = inWeb ? webSeen : otherSeen;
+            if (into.size() < 25) into.insert(n);
+        }
+        const int score = uiMatchScore(labels, wanted);
+        if (score > found.score) {
+            found.score = score;
+            found.secure = attributeText(el, kAXSubroleAttribute) == "AXSecureTextField";
+            CFRetain(el);
+            found.element = Element(el);
+            if (score == 2) return false;   // exact match: stop looking
+        }
+        return true;
+    });
+
+    found.seen.assign(webSeen.begin(), webSeen.end());
+    if (found.seen.size() < 25) {
+        for (const std::string& s : otherSeen) {
+            if (found.seen.size() >= 25) break;
+            found.seen.push_back(s);
+        }
+    }
     return found;
 }
 
@@ -323,6 +387,57 @@ UiResult uiClick(const std::string& app, const std::string& text, int waitSecond
         std::this_thread::sleep_for(std::chrono::milliseconds(400));   // let the app react
         return {true, "", {}};
     });
+}
+
+std::vector<std::string> uiInspect(const std::string& app, std::string& error) {
+    std::string howTo;
+    if (!uiPermissionOk(howTo)) {
+        error = howTo;
+        return {};
+    }
+    std::vector<std::string> lines;
+    for (int pass = 1; pass <= 2; ++pass) {
+        Element appElement;
+        Element window = findAppWindow(app, appElement, error);
+        if (!window) return {};
+        if (pass == 1) {   // first look switches the page tree on; give it time to build
+            std::this_thread::sleep_for(std::chrono::seconds(4));
+            continue;
+        }
+
+        std::size_t webAreas = 0, webElements = 0, fields = 0, clickables = 0;
+        std::vector<std::string> webLabels;
+        std::set<std::string> unique;
+        const std::size_t visited = walk(window.get(), [&](AXUIElementRef el, const std::string& role, int,
+                                                           bool inWeb) {
+            if (role == "AXWebArea") ++webAreas;
+            if (inWeb) ++webElements;
+            const bool field = isFieldRole(role), click = isClickableRole(role);
+            if (field) ++fields;
+            if (click) ++clickables;
+            if (inWeb && (field || click) && webLabels.size() < 40) {
+                for (const std::string& l : labelsFor(el, click)) {
+                    const std::string n = uiNormalize(l);
+                    if (!n.empty() && unique.insert(n).second) {
+                        webLabels.push_back(std::string(field ? "field: " : "button/link: ") + n);
+                        break;
+                    }
+                }
+            }
+            return true;
+        });
+
+        lines.push_back("window title: " + attributeText(window.get(), kAXTitleAttribute));
+        lines.push_back("elements visited: " + std::to_string(visited));
+        lines.push_back("web page areas: " + std::to_string(webAreas) + "   elements inside pages: " +
+                        std::to_string(webElements));
+        lines.push_back("fields: " + std::to_string(fields) + "   buttons/links: " + std::to_string(clickables));
+        if (webAreas == 0) {
+            lines.push_back("NO web page found: the app is not sharing page contents with accessibility.");
+        }
+        for (const std::string& l : webLabels) lines.push_back("  " + l);
+    }
+    return lines;
 }
 
 }  // namespace easy::platform
