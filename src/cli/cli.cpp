@@ -36,7 +36,7 @@ int showCommand(int argc, char** argv) {
     const core::Recipe& r = *result.recipe;
     std::cout << "Recipe: " << r.id << " (v" << r.version << ")\n";
     if (!r.task.empty()) std::cout << "Task:   " << r.task << "\n";
-    std::cout << "Steps:\n";
+    std::cout << "Steps ("<< r.steps.size() <<"):\n";
 
     int n = 1;
     for (const auto& step : r.steps) {
