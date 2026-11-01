@@ -1,5 +1,7 @@
 #include "cli/cli.h"
 
+#include "native/native_host.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <deque>
@@ -636,6 +638,7 @@ int run(int argc, char** argv) {
         printUsage();
         return 0;
     }
+    if (cmd == "native-host") return native::runNativeHost();
     if (cmd == "learn") return learnCommand(argc, argv);
     if (cmd == "run") return runCommand(argc, argv);
     if (cmd == "list") return listCommand();
