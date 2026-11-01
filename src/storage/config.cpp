@@ -49,6 +49,10 @@ ConfigLoadResult parseConfig(const std::string& jsonText) {
             config.allowed_apps.push_back(app.get<std::string>());
         }
     }
+    if (j.contains("resume")) {
+        if (!j["resume"].is_string()) return fail("\"resume\" must be a file path");
+        config.resume = j["resume"].get<std::string>();
+    }
     return {std::move(config), ""};
 }
 
