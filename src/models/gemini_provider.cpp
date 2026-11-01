@@ -13,15 +13,12 @@ using nlohmann::json;
 GeminiProvider::GeminiProvider(std::string apiKey, std::string model)
     : apiKey_(std::move(apiKey)), model_(std::move(model)) {}
 
-std::string buildGeminiRequest(const std::string& prompt) {
-    const json body = {
+std::string buildGeminiRequest(const std::string& prompt, bool jsonOutput) {
+    json body = {
         {"contents", json::array({{{"parts", json::array({{{"text", prompt}}})}}})},
-        {"generationConfig",
-         {
-             {"temperature", 0},                       // same task -> same plan
-             {"responseMimeType", "application/json"}  // ask for plain JSON
-         }},
+        {"generationConfig", {{"temperature", 0}}},   // same task -> same plan
     };
+    if (jsonOutput) body["generationConfig"]["responseMimeType"] = "application/json";
     return body.dump();   // json escapes quotes/newlines in the prompt safely
 }
 
@@ -63,12 +60,16 @@ ModelReply parseGeminiResponse(long httpStatus, const std::string& body) {
     return {true, text, ""};
 }
 
-ModelReply GeminiProvider::ask(const std::string& prompt) {
+ModelReply GeminiProvider::ask(const std::string& prompt) { return send(prompt, true); }
+
+ModelReply GeminiProvider::askText(const std::string& prompt) { return send(prompt, false); }
+
+ModelReply GeminiProvider::send(const std::string& prompt, bool jsonOutput) {
     const std::string url = "https://generativelanguage.googleapis.com/v1beta/models/" +
                             model_ + ":generateContent";
     const HttpResponse http = httpPostJson(
         url, {"Content-Type: application/json", "x-goog-api-key: " + apiKey_},
-        buildGeminiRequest(prompt));
+        buildGeminiRequest(prompt, jsonOutput));
 
     if (!http.ok) return {false, "", "could not reach Gemini: " + http.error};
     return parseGeminiResponse(http.status, http.body);

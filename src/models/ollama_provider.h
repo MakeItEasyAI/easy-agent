@@ -20,14 +20,18 @@ public:
     std::string name() const override { return "ollama:" + model_; }
     bool isLocal() const override { return true; }
     ModelReply ask(const std::string& prompt) override;
+    ModelReply askText(const std::string& prompt) override;
 
 private:
+    ModelReply send(const std::string& prompt, bool jsonOutput);
+
     std::string model_;
     std::string host_;
 };
 
 // Pure helpers (no network) so they can be unit-tested.
-std::string buildOllamaRequest(const std::string& model, const std::string& prompt);
+std::string buildOllamaRequest(const std::string& model, const std::string& prompt,
+                               bool jsonOutput = true);
 ModelReply parseOllamaResponse(long httpStatus, const std::string& body, const std::string& model);
 
 }  // namespace easy::models

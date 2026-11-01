@@ -12,6 +12,8 @@
 // (typo, or something the AI invented) is rejected.
 namespace easy::actions {
 
+class AiAccess;
+
 class ActionRegistry {
 public:
     void add(std::unique_ptr<Action> action);
@@ -24,8 +26,10 @@ private:
     std::map<std::string, std::unique_ptr<Action>> actions_;
 };
 
-// Registry with all built-in actions (list_files, move_files, open_app, open_url).
+// Registry with all built-in actions (files, apps/URLs, ui_*, read_pdf, ai_answer).
 // allowedApps: apps that open_app may start without asking (from config).
-ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps = {});
+// ai:          how ai_answer reaches the AI model (null = ai_answer reports no AI).
+ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps = {},
+                                   std::shared_ptr<AiAccess> ai = nullptr);
 
 }  // namespace easy::actions

@@ -20,13 +20,17 @@ bool FallbackProvider::isLocal() const {
                        [](const auto& p) { return p->isLocal(); });
 }
 
-ModelReply FallbackProvider::ask(const std::string& prompt) {
+ModelReply FallbackProvider::ask(const std::string& prompt) { return tryAll(prompt, false); }
+
+ModelReply FallbackProvider::askText(const std::string& prompt) { return tryAll(prompt, true); }
+
+ModelReply FallbackProvider::tryAll(const std::string& prompt, bool text) {
     std::string errors;
     // Start from the model that worked last time in this run, so a retry does
     // not wait for an already-failed model again.
     for (std::size_t i = start_; i < providers_.size(); ++i) {
         ModelProvider& model = *providers_[i];
-        ModelReply reply = model.ask(prompt);
+        ModelReply reply = text ? model.askText(prompt) : model.ask(prompt);
         if (reply.ok) {
             start_ = i;
             return reply;

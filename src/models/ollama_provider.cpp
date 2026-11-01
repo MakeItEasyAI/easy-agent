@@ -13,14 +13,17 @@ OllamaProvider::OllamaProvider(std::string model, std::string host)
     while (!host_.empty() && host_.back() == '/') host_.pop_back();
 }
 
-std::string buildOllamaRequest(const std::string& model, const std::string& prompt) {
-    const json body = {
+std::string buildOllamaRequest(const std::string& model, const std::string& prompt, bool jsonOutput) {
+    json body = {
         {"model", model},
         {"prompt", prompt},
-        {"stream", false},                    // one complete answer
-        {"format", "json"},                   // force valid JSON output
-        {"options", {{"temperature", 0}}},    // same task -> same plan
+        {"stream", false},   // one complete answer
+        // temperature 0: same task -> same plan. num_ctx: room for long prompts
+        // (a document + instructions); Ollama's small default would silently
+        // cut the start of the prompt.
+        {"options", {{"temperature", 0}, {"num_ctx", 8192}}},
     };
+    if (jsonOutput) body["format"] = "json";   // force valid JSON output
     return body.dump();
 }
 
@@ -51,7 +54,11 @@ ModelReply parseOllamaResponse(long httpStatus, const std::string& body, const s
     return {true, j["response"].get<std::string>(), ""};
 }
 
-ModelReply OllamaProvider::ask(const std::string& prompt) {
+ModelReply OllamaProvider::ask(const std::string& prompt) { return send(prompt, true); }
+
+ModelReply OllamaProvider::askText(const std::string& prompt) { return send(prompt, false); }
+
+ModelReply OllamaProvider::send(const std::string& prompt, bool jsonOutput) {
     if (!isLocalHttpUrl(host_ + "/")) {
         return {false, "", "OLLAMA_HOST must be http://localhost:<port> or http://127.0.0.1:<port>"};
     }
@@ -61,7 +68,7 @@ ModelReply OllamaProvider::ask(const std::string& prompt) {
 
     const HttpResponse http = httpPostJson(host_ + "/api/generate",
                                            {"Content-Type: application/json"},
-                                           buildOllamaRequest(model_, prompt), options);
+                                           buildOllamaRequest(model_, prompt, jsonOutput), options);
     if (!http.ok) {
         return {false, "",
                 "could not reach Ollama at " + host_ + ": " + http.error +

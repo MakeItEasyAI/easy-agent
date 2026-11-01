@@ -21,8 +21,11 @@ public:
 
     std::string name() const override { return "gemini:" + model_; }
     ModelReply ask(const std::string& prompt) override;
+    ModelReply askText(const std::string& prompt) override;
 
 private:
+    ModelReply send(const std::string& prompt, bool jsonOutput);
+
     std::string apiKey_;
     std::string model_;
 };
@@ -32,7 +35,7 @@ private:
 std::unique_ptr<ModelProvider> makeGeminiFromEnv(std::string& error);
 
 // Pure helpers (no network) so they can be unit-tested.
-std::string buildGeminiRequest(const std::string& prompt);
+std::string buildGeminiRequest(const std::string& prompt, bool jsonOutput = true);
 ModelReply parseGeminiResponse(long httpStatus, const std::string& body);
 
 }  // namespace easy::models

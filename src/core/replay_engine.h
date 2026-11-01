@@ -22,6 +22,7 @@ struct ReplayResult {
     bool recipe_changed = false;   // true if self-heal updated a step
     int steps_done = 0;            // how many steps finished successfully
     std::string message;
+    std::string last_step_message; // what the last successful step reported (e.g. an AI answer)
 };
 
 class ReplayEngine {
