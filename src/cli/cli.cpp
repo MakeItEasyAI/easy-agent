@@ -736,11 +736,45 @@ int fillFormCommand(const std::string& url, const std::string& resumeArg,
         }
     }
 
+    // Human-in-the-loop: ask about anything the resume didn't answer, then fill
+    // your answer. Nothing is guessed — a field stays blank unless you type a
+    // value. This is the "agent asks you when it's blocked" step.
+    if (!skipped.empty()) {
+        ConsoleConfirmer confirmer;
+        std::cout << "\nA few I couldn't fill from your resume. Type a value, or just press "
+                     "Enter to leave it for you:\n";
+        std::vector<std::string> remaining;
+        for (const std::string& label : skipped) {
+            const FormField* ff = nullptr;
+            for (const FormField& f : formFields) if (f.label == label) { ff = &f; break; }
+            std::string q = "  " + label;
+            if (ff && !ff->options.empty()) {
+                q += " [";
+                for (std::size_t i = 0; i < ff->options.size(); ++i) q += (i ? " | " : "") + ff->options[i];
+                q += "]";
+            }
+            const std::string answer = confirmer.askLine(q);
+            if (answer.empty()) { remaining.push_back(label); continue; }
+            const bool isChoice = ff && (ff->type == "radio" || ff->type == "checkbox" || ff->type == "select");
+            nlohmann::json res;
+            if (link.command({{"action", isChoice ? "choose" : "fill"}, {"field", label},
+                              {"value", answer}, {"url", url}}, res, error) &&
+                res.is_object() && res.value("ok", false)) {
+                filled.push_back(label);
+            } else {
+                std::cout << "    (couldn't put that in: "
+                          << (error.empty() ? "field not found on the page" : error) << ")\n";
+                remaining.push_back(label);
+            }
+        }
+        skipped = remaining;
+    }
+
     std::cout << "\nFilled " << filled.size() << " field(s)";
     if (!filled.empty()) { std::cout << ": "; for (std::size_t i = 0; i < filled.size(); ++i) std::cout << (i ? ", " : "") << filled[i]; }
     std::cout << ".\n";
     if (!skipped.empty()) {
-        std::cout << "Left for you (not in the resume, or a choice): ";
+        std::cout << "Still blank (you skipped these — fill them in Chrome): ";
         for (std::size_t i = 0; i < skipped.size(); ++i) std::cout << (i ? ", " : "") << skipped[i];
         std::cout << "\n";
     }
