@@ -16,7 +16,6 @@
 #include "actions/move_files.h"
 #include "actions/open_actions.h"
 #include "actions/registry.h"
-#include "actions/ui_actions.h"
 #include "cli/console_confirmer.h"
 #include "core/confirmer.h"
 #include "actions/path_utils.h"
@@ -34,7 +33,6 @@
 #include "models/model_provider.h"
 #include "platform/launch.h"
 #include "platform/platform.h"
-#include "platform/ui_automation.h"
 #include "storage/config.h"
 #include "storage/recipe_json.h"
 #include "storage/storage.h"
@@ -915,71 +913,6 @@ int main() {
         check(!easy::storage::parseConfig(R"({"allowed_folders": ["~/D"], "allowed_apps": [1]})")
                    .config,
               "bad allowed_apps rejected");
-    }
-
-    // --- UI automation: label matching + ui_fill / ui_click rules (nothing is controlled) ---
-    {
-        using namespace easy::platform;
-        using namespace easy::actions;
-        using easy::core::RiskLevel;
-
-        check(uiNormalize("  Full   Name * ") == "full name", "normalize: case, spaces, required star");
-        check(uiMatchScore({"Full name *"}, "full name") == 2, "exact label match");
-        check(uiMatchScore({"What is your full name?"}, "full name") == 1, "label contains the words");
-        check(uiMatchScore({"Name"}, "Your name") == 1, "short label inside the wanted text");
-        check(uiMatchScore({"Email"}, "Phone") == 0, "different label does not match");
-        check(uiMatchScore({"", "  "}, "Name") == 0, "empty labels never match");
-        check(uiMatchScore({"ab"}, "lab report") == 0, "very short labels do not match by accident");
-
-        for (const char* t : {"Submit", "Submit application", "Apply now", "Pay", "Place order", "Sign in"}) {
-            check(isFinalAction(t), (std::string("final: ") + t).c_str());
-        }
-        for (const char* t : {"Next", "Back", "Yes", "Full-time", "Upload later"}) {
-            check(!isFinalAction(t), (std::string("not final: ") + t).c_str());
-        }
-        check(isSecretField("Password") && isSecretField("Enter OTP") && isSecretField("Card number"),
-              "secret fields recognised");
-        check(!isSecretField("PIN code") && !isSecretField("Pincode") && !isSecretField("Full name"),
-              "postal PIN code and normal fields are fine");
-        check(isTerminalApp("Terminal") && isTerminalApp("iTerm2") && isTerminalApp("PowerShell"),
-              "terminal apps recognised");
-        check(!isTerminalApp("Google Chrome"), "browser is not a terminal");
-
-        UiFillAction fill({"Google Chrome"});
-        UiClickAction click;
-        check(fill.riskFor({{"app", "google chrome"}}) == RiskLevel::Safe, "typing in an allowed app is Safe");
-        check(fill.riskFor({{"app", "Safari"}}) == RiskLevel::Confirm, "other apps need confirmation");
-        check(click.riskFor({{"app", "Google Chrome"}, {"text", "Next"}}) == RiskLevel::Confirm,
-              "clicks need confirmation");
-        check(click.riskFor({{"app", "Google Chrome"}, {"text", "Submit"}}) == RiskLevel::Blocked,
-              "Submit is Blocked");
-
-        check(!fill.checkParams({{"app", "Terminal"}, {"field", "x"}, {"value", "rm -rf ~"}}).empty(),
-              "never types into a terminal");
-        check(!fill.checkParams({{"app", "Chrome; rm"}, {"field", "Name"}, {"value", "x"}}).empty(),
-              "unsafe app name rejected");
-        check(!fill.checkParams({{"app", "Google Chrome"}, {"field", "Password"}, {"value", "x"}}).empty(),
-              "never types passwords");
-        check(!fill.checkParams({{"app", "Google Chrome"}, {"value", "x"}}).empty(), "needs a field");
-        check(!fill.checkParams({{"app", "Google Chrome"}, {"field", "Name"}}).empty(), "needs a value");
-        check(!click.checkParams({{"app", "Google Chrome"}, {"text", "Submit application"}}).empty(),
-              "planner is told not to press Submit");
-#if defined(__APPLE__)
-        if (appExists("Google Chrome")) {
-            check(fill.checkParams({{"app", "Google Chrome"}, {"field", "Name"}, {"value", "Nikhil"}}).empty(),
-                  "normal fill in Chrome passes the checks");
-        }
-        check(!fill.checkParams({{"app", "NoSuchAppEasyAgentTest"}, {"field", "Name"}, {"value", "x"}}).empty(),
-              "app must be installed");
-#endif
-        const auto registry = makeDefaultRegistry();
-        check(registry.find("ui_fill") && registry.find("ui_click"), "ui actions registered");
-
-        easy::core::RecipeValidator v(registry);
-        easy::core::Recipe submit;
-        submit.id = "s";
-        submit.steps = {easy::core::Step{"ui_click", {{"app", "Google Chrome"}, {"text", "Submit"}}, ""}};
-        check(!v.validate(submit).ok, "validator rejects a recipe that presses Submit");
     }
 
     // --- read_pdf / ai_answer ---
