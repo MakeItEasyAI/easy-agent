@@ -26,6 +26,7 @@ add_library(easy_core
     src/actions/move_files.cpp
     src/actions/registry.cpp
     src/actions/open_actions.cpp
+    src/actions/document_actions.cpp
     src/platform/launch.cpp
     src/core/safety_guard.cpp
     src/core/replay_engine.cpp
@@ -63,6 +64,16 @@ elseif(WIN32)
     target_link_libraries(easy_core PUBLIC ole32 oleaut32)
 else()
     target_sources(easy_core PRIVATE src/platform/ui_automation_none.cpp)
+endif()
+
+# Reading PDF text: Apple PDFKit (Objective-C++) on macOS, not yet elsewhere.
+if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(easy_core PRIVATE src/platform/pdf_text_mac.mm)
+    set_source_files_properties(src/platform/pdf_text_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(easy_core PUBLIC "-framework PDFKit" "-framework Foundation")
+else()
+    target_sources(easy_core PRIVATE src/platform/pdf_text_none.cpp)
 endif()
 
 # The command users run: `easy`

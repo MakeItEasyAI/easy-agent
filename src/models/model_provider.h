@@ -17,7 +17,13 @@ class ModelProvider {
 public:
     virtual ~ModelProvider() = default;
     virtual std::string name() const = 0;
+
+    // Asks for a JSON reply (used for recipes).
     virtual ModelReply ask(const std::string& prompt) = 0;
+
+    // Asks for a normal text reply (used for answers/summaries). Providers
+    // that force JSON in ask() override this; the default just calls ask().
+    virtual ModelReply askText(const std::string& prompt) { return ask(prompt); }
 
     // true = runs on this computer, nothing is sent to the internet.
     virtual bool isLocal() const { return false; }

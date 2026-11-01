@@ -115,6 +115,7 @@ ReplayResult SimpleReplayEngine::replay(Recipe& recipe) {
         if (!step.save_as.empty()) vars[step.save_as] = std::move(run.outputs);
 
         ++result.steps_done;
+        result.last_step_message = run.message;
         log_ << "  ok step " << stepNo << " " << step.action << ": " << run.message << "\n";
     }
 

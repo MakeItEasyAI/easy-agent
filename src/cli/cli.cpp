@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "actions/document_actions.h"
 #include "actions/registry.h"
 #include "cli/console_confirmer.h"
 #include "core/planner.h"
@@ -288,9 +289,15 @@ private:
 };
 
 // Runs a recipe through the safety guard + confirmations. Prints progress.
-// Returns "" when it finished, otherwise why it stopped.
-std::string runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer) {
-    const auto registry = actions::makeDefaultRegistry(config.allowed_apps);
+// Returns "" when it finished, otherwise why it stopped. `lastMessage` gets
+// what the last step reported (e.g. an AI answer), for the session history.
+std::string runRecipe(core::Recipe& recipe, const storage::Config& config, core::Confirmer& confirmer,
+                      const std::string& modelSpec = "", std::string* lastMessage = nullptr) {
+    // ai_answer steps reach the AI through this; it is only created if such a step runs.
+    auto ai = std::make_shared<actions::AiAccess>([&](std::string& error) {
+        return models::makeModel(chooseModelSpec(modelSpec, config.model), error, std::cerr);
+    });
+    const auto registry = actions::makeDefaultRegistry(config.allowed_apps, ai);
     const core::FolderSafetyGuard guard(config.allowed_folders);
     core::SimpleReplayEngine engine(registry, guard, confirmer, std::cout);
 
@@ -302,6 +309,7 @@ std::string runRecipe(core::Recipe& recipe, const storage::Config& config, core:
         return result.message.empty() ? "stopped" : result.message;
     }
     std::cout << "Done: " << recipe.id << " (" << result.steps_done << " steps)\n";
+    if (lastMessage) *lastMessage = result.last_step_message;
     return "";
 }
 
@@ -367,6 +375,7 @@ int learnTask(const std::string& task, const storage::Config& config, const std:
     //    (Enter with no text). Saying "n", or a step failing, asks what to change.
     constexpr int kMaxChanges = 5;
     std::string lastRunProblem;   // why the last run stopped (for the session history)
+    std::string lastStepMessage;  // what the last step reported (e.g. an AI answer)
     for (int changes = 0;; ++changes) {
         std::string question;
         std::string lastProblem;
@@ -380,7 +389,7 @@ int learnTask(const std::string& task, const storage::Config& config, const std:
             printRecipe(*recipe);
             std::cout << "\n";
             if (confirmer.confirm("Run this recipe?")) {
-                lastProblem = runRecipe(*recipe, config, confirmer);
+                lastProblem = runRecipe(*recipe, config, confirmer, modelSpec, &lastStepMessage);
                 if (lastProblem.empty()) break;   // it worked
                 lastRunProblem = lastProblem;
                 question = "What should change? (Enter to stop)\n>";
@@ -427,7 +436,15 @@ int learnTask(const std::string& task, const storage::Config& config, const std:
     }
 
     // 3. It worked. Save new recipes; update a saved one only if the user changed it.
-    report("done: " + describeSteps(*recipe));
+    // An answer (e.g. details read from a PDF) is kept for follow-up tasks in
+    // the session, so "now fill the form using my resume" can use it.
+    std::string done = "done: " + describeSteps(*recipe);
+    if (recipe->steps.back().action == "ai_answer" && !lastStepMessage.empty()) {
+        std::string answer = lastStepMessage;
+        if (answer.size() > 3000) answer = answer.substr(0, 3000) + "...";
+        done += "\n   answer: " + answer;
+    }
+    report(done);
     if (!savedId.empty() && !changed) return 0;
     const bool updating = !savedId.empty();
     const std::string error = updating ? store.replace(*recipe) : store.save(*recipe);
@@ -439,7 +456,11 @@ int learnTask(const std::string& task, const storage::Config& config, const std:
         std::cout << "\nUpdated saved recipe \"" << recipe->id << "\" (v" << recipe->version
                   << "). Next time it runs the fixed version, without AI.\n";
     } else {
-        std::cout << "\nSaved as \"" << recipe->id << "\". Next time it runs instantly, without AI:\n"
+        const bool usesAi = std::any_of(recipe->steps.begin(), recipe->steps.end(),
+                                        [](const core::Step& s) { return s.action == "ai_answer"; });
+        std::cout << "\nSaved as \"" << recipe->id << "\". Next time "
+                  << (usesAi ? "no planning is needed (the answer step still asks the AI):\n"
+                             : "it runs instantly, without AI:\n")
                   << "  easy run " << recipe->id << "\n";
     }
     return 0;

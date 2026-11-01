@@ -19,8 +19,11 @@ public:
     std::string name() const override;   // "gemini:x -> ollama:y"
     bool isLocal() const override;       // true only if every model is local
     ModelReply ask(const std::string& prompt) override;
+    ModelReply askText(const std::string& prompt) override;
 
 private:
+    ModelReply tryAll(const std::string& prompt, bool text);
+
     std::vector<std::unique_ptr<ModelProvider>> providers_;
     std::ostream& notices_;
     std::size_t start_ = 0;   // index of the model that last worked
