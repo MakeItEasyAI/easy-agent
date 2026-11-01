@@ -1,5 +1,6 @@
 #include "actions/registry.h"
 
+#include "actions/browser_actions.h"
 #include "actions/document_actions.h"
 #include "actions/list_files.h"
 #include "actions/move_files.h"
@@ -24,7 +25,9 @@ std::vector<const Action*> ActionRegistry::all() const {
 }
 
 ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps,
-                                   std::shared_ptr<AiAccess> ai) {
+                                   std::shared_ptr<AiAccess> ai,
+                                   std::shared_ptr<BrowserSession> browser) {
+    if (!browser) browser = std::make_shared<BrowserSession>();
     ActionRegistry registry;
     registry.add(std::make_unique<ListFilesAction>());
     registry.add(std::make_unique<MoveFilesAction>());
@@ -32,6 +35,9 @@ ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps,
     registry.add(std::make_unique<OpenUrlAction>());
     registry.add(std::make_unique<ReadPdfAction>());
     registry.add(std::make_unique<AiAnswerAction>(std::move(ai)));
+    registry.add(std::make_unique<BrowserOpenAction>(browser));
+    registry.add(std::make_unique<BrowserFillAction>(browser));
+    registry.add(std::make_unique<BrowserClickAction>(browser));
     return registry;
 }
 

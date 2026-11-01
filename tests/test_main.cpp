@@ -13,9 +13,12 @@
 #include "actions/action.h"
 #include "actions/document_actions.h"
 #include "actions/list_files.h"
+#include "actions/browser_actions.h"
 #include "actions/move_files.h"
 #include "actions/open_actions.h"
 #include "actions/registry.h"
+#include "browser/chrome.h"
+#include "browser/websocket.h"
 #include "cli/console_confirmer.h"
 #include "core/confirmer.h"
 #include "actions/path_utils.h"
@@ -554,11 +557,11 @@ int main() {
         // 4. Bad twice -> gives up with an error (never returns a bad recipe)
         {
             FakeModel model;
-            model.replies = {{true, "I can't help", ""}, {true, "still no json", ""}};
+            model.replies = {{true, "I can't help", ""}, {true, "still no json", ""}, {true, "nope", ""}};
             easy::core::LlmPlanner planner(model, registry, validator);
             const auto res = planner.plan("Move PDFs");
-            check(!res.recipe.has_value() && !res.error.empty(), "gives up after 2 bad replies");
-            check(res.attempts == 2, "stops at max attempts");
+            check(!res.recipe.has_value() && !res.error.empty(), "gives up after max bad replies");
+            check(res.attempts == easy::core::LlmPlanner::kMaxAttempts, "stops at max attempts");
         }
 
         // 5. Model/network error -> no retry
@@ -1001,6 +1004,139 @@ int main() {
                      easy::core::Step{"ai_answer", {{"question", "details"}, {"text", "$doc"}}, ""}};
         check(v.validate(doc).ok, "read_pdf -> ai_answer recipe is valid");
     }
+
+    // --- WebSocket framing (no network) ---
+    {
+        using namespace easy::browser;
+        check(base64Encode("") == "" && base64Encode("f") == "Zg==" && base64Encode("fo") == "Zm8=" &&
+                  base64Encode("foo") == "Zm9v" && base64Encode("foobar") == "Zm9vYmFy",
+              "base64 matches RFC 4648 examples");
+
+        for (std::size_t size : {std::size_t{5}, std::size_t{125}, std::size_t{126}, std::size_t{70000}}) {
+            const std::string payload(size, 'x');
+            const std::string frame = encodeFrame(0x1, payload, "abcd");
+            Frame parsed;
+            std::size_t used = 0;
+            check(parseFrame(frame, parsed, used) && used == frame.size() && parsed.fin &&
+                      parsed.opcode == 0x1 && parsed.payload == payload,
+                  ("masked frame round trip, size " + std::to_string(size)).c_str());
+            check(!parseFrame(frame.substr(0, frame.size() - 1), parsed, used),
+                  "incomplete frame waits for more bytes");
+        }
+        Frame parsed;
+        std::size_t used = 0;
+        check(parseFrame(encodeFrame(0x9, "hi", ""), parsed, used) && parsed.opcode == 0x9 &&
+                  parsed.payload == "hi",
+              "unmasked server frame (ping) parses");
+
+        const auto cmd = nlohmann::json::parse(buildCdpCommand(7, "Page.navigate", {{"url", "https://a.com"}}, "S1"));
+        check(cmd["id"] == 7 && cmd["method"] == "Page.navigate" && cmd["sessionId"] == "S1",
+              "CDP command has id, method, session");
+    }
+
+    // --- browser actions (no browser started) ---
+    {
+        using namespace easy::actions;
+        using easy::core::RiskLevel;
+        auto session = std::make_shared<BrowserSession>();
+        BrowserOpenAction open(session);
+        BrowserFillAction fill(session);
+        BrowserClickAction click(session);
+
+        check(!isFinalAction("Next") && !isFinalAction("Option 1") && !isFinalAction("Clear form"),
+              "normal buttons are not final actions");
+        for (const char* t : {"Submit", "SEND", "Pay now", "Buy", "Place order", "Delete", "Sign in"}) {
+            check(isFinalAction(t), (std::string("final action: ") + t).c_str());
+        }
+        check(click.riskFor({{"text", "Submit"}}) == RiskLevel::Blocked, "Submit click is Blocked");
+        check(click.riskFor({{"text", "Next"}}) == RiskLevel::Confirm, "other clicks need confirmation");
+        check(!click.checkParams({{"text", "Submit"}}).empty(), "planner is told not to click Submit");
+        check(fill.risk() == RiskLevel::Safe && open.risk() == RiskLevel::Confirm, "fill Safe, open Confirm");
+
+        check(!open.checkParams({{"url", "file:///etc/passwd"}}).empty(), "browser_open refuses file://");
+        check(open.checkParams({{"url", "https://docs.google.com/forms/x"}}).empty(), "https form ok");
+        check(!fill.checkParams({{"field", "Password"}, {"value", "x"}}).empty(), "no password typing");
+        check(!fill.checkParams({{"field", "Enter OTP"}, {"value", "1"}}).empty(), "no OTP typing");
+        check(fill.checkParams({{"field", "PIN code"}, {"value", "411001"}}).empty(),
+              "postal PIN code is fine");
+        check(!fill.checkParams({{"value", "x"}}).empty(), "fill needs a field");
+
+        const std::string script = buildFillScript("Name\"); alert(1); (\"", "a\nb");
+        check(script.find(R"(norm("Name\"); alert(1); (\""))") != std::string::npos &&
+                  script.find(R"("a\nb")") != std::string::npos,
+              "field and value are JSON-escaped, never run as code");
+        check(!session->started(), "checks never start a browser");
+
+        const auto registry = makeDefaultRegistry({}, nullptr, session);
+        check(registry.find("browser_open") && registry.find("browser_fill") &&
+                  registry.find("browser_click"),
+              "browser actions registered");
+
+        easy::core::RecipeValidator v(registry);
+        easy::core::Recipe submit;
+        submit.id = "s";
+        submit.steps = {easy::core::Step{"browser_open", {{"url", "https://a.com"}}, ""},
+                        easy::core::Step{"browser_click", {{"text", "Submit"}}, ""}};
+        check(!v.validate(submit).ok, "validator rejects a recipe that clicks Submit");
+
+        // The exact mistake from a real run: open_url (normal Chrome) then browser_fill
+        easy::core::Recipe wrongOpen;
+        wrongOpen.id = "w";
+        wrongOpen.steps = {easy::core::Step{"open_url", {{"url", "https://a.com"}}, ""},
+                           easy::core::Step{"browser_fill", {{"field", "Name"}, {"value", "N"}}, ""}};
+        const auto wrong = v.validate(wrongOpen);
+        check(!wrong.ok && wrong.errors[0].find("browser_open") != std::string::npos,
+              "browser_fill without an earlier browser_open is rejected");
+        easy::core::Recipe rightOpen;
+        rightOpen.id = "r";
+        rightOpen.steps = {easy::core::Step{"browser_open", {{"url", "https://a.com"}}, ""},
+                           easy::core::Step{"browser_fill", {{"field", "Name"}, {"value", "N"}}, ""}};
+        check(v.validate(rightOpen).ok, "browser_open then browser_fill is fine");
+    }
+
+    // --- live browser test: only with EASY_TEST_BROWSER=1 (uses headless Chrome) ---
+#if !defined(_WIN32)
+    if (const char* live = std::getenv("EASY_TEST_BROWSER"); live && std::string(live) == "1") {
+        using namespace easy::actions;
+        setenv("EASY_BROWSER_HEADLESS", "1", 1);
+        easy::browser::ChromeBrowser chrome;
+        const std::string err = chrome.start();
+        check(err.empty(), ("headless Chrome starts: " + err).c_str());
+        const auto ok = [](const nlohmann::json& r) {
+            return r.is_object() && r.contains("ok") && r["ok"] == true;
+        };
+        if (err.empty()) {
+            std::cout << "  (live) Chrome remote control on 127.0.0.1:" << chrome.port() << "\n";
+            const std::string page =
+                "data:text/html,<label for=n>Your name *</label><input id=n>"
+                "<div role=listitem><div role=heading>Email address</div><input aria-labelledby=x></div>"
+                "<input type=password aria-label=Password>"
+                "<label><input type=radio name=c value=Tea>Tea</label>"
+                "<button onclick=\"document.title='next'\">Next</button>";
+            check(chrome.navigate(page).empty(), "navigate to test page");
+
+            std::string e;
+            auto r = chrome.evaluate(buildFillScript("Your name", "Nikhil"), e);
+            check(e.empty() && ok(r), "fill by <label> (ignoring the * mark)");
+            check(chrome.evaluate("document.getElementById('n').value", e) == "Nikhil", "value really set");
+            r = chrome.evaluate(buildFillScript("Email address", "a@b.com"), e);
+            check(ok(r), "fill by Google-Forms-style question heading");
+            r = chrome.evaluate(buildFillScript("Password", "secret"), e);
+            check(r.is_object() && !ok(r), "page script refuses password fields too");
+            r = chrome.evaluate(buildFillScript("Phone", "1"), e);
+            check(r.is_object() && !ok(r) && r.contains("fields"), "missing field lists the real fields");
+            r = chrome.evaluate(buildClickScript("Tea"), e);
+            check(ok(r) && chrome.evaluate("document.querySelector('input[type=radio]').checked", e) == true,
+                  "click a choice by its text");
+            r = chrome.evaluate(buildClickScript("Next"), e);
+            check(ok(r) && chrome.evaluate("document.title", e) == "next", "click a button");
+            const std::string profileDir = chrome.profileDir();
+            chrome.close();
+            check(!chrome.running(), "Chrome closed");
+            check(!std::filesystem::exists(profileDir), "the run's profile folder is deleted");
+        }
+    }
+#endif
 
     if (failures == 0) std::cout << "All tests passed\n";
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

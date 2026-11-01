@@ -24,6 +24,7 @@ bool isVariableName(const std::string& name) {
 ValidationResult RecipeValidator::validate(const Recipe& recipe) const {
     ValidationResult result;
     std::set<std::string> saved;   // names saved by earlier steps
+    std::set<std::string> seenActions;
 
     for (std::size_t i = 0; i < recipe.steps.size(); ++i) {
         const Step& step = recipe.steps[i];
@@ -31,7 +32,13 @@ ValidationResult RecipeValidator::validate(const Recipe& recipe) const {
 
         if (registry_.find(step.action) == nullptr) {
             result.errors.push_back(where + "unknown action \"" + step.action + "\"");
+        } else if (const std::string needed = registry_.find(step.action)->needsEarlier();
+                   !needed.empty() && seenActions.count(needed) == 0) {
+            result.errors.push_back(where + step.action + " only works on a page opened by an EARLIER " +
+                                    needed + " step. Open the page with " + needed +
+                                    " instead (other open actions use a different window)");
         }
+        seenActions.insert(step.action);
         bool usesVariable = false;
         for (const auto& [key, value] : step.params) {
             if (value.size() > 1 && value[0] == '$') usesVariable = true;
