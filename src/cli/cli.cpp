@@ -715,8 +715,18 @@ int fillFormCommand(const std::string& url, const std::string& resumeArg,
         return 1;
     }
 
+    // A CAPTCHA is a human-only challenge. Never try to fill it and never ask
+    // the user to type it — just flag it so they solve it in Chrome.
+    const auto isCaptcha = [](const std::string& s) {
+        std::string l = s;
+        for (char& c : l) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return l.find("captcha") != std::string::npos || l.find("not a robot") != std::string::npos;
+    };
+    bool hasCaptcha = false;
+
     std::vector<std::string> filled, skipped;
     for (const FormField& f : formFields) {
+        if (isCaptcha(f.label)) { hasCaptcha = true; continue; }
         std::string value;
         for (const auto& [key, val] : mapping.items()) {
             if (normalizeLabel(key) == normalizeLabel(f.label) && val.is_string()) {
@@ -777,6 +787,10 @@ int fillFormCommand(const std::string& url, const std::string& resumeArg,
         std::cout << "Still blank (you skipped these — fill them in Chrome): ";
         for (std::size_t i = 0; i < skipped.size(); ++i) std::cout << (i ? ", " : "") << skipped[i];
         std::cout << "\n";
+    }
+    if (hasCaptcha) {
+        std::cout << "\nNote: this form has a CAPTCHA. Solve it yourself in Chrome — the agent "
+                     "never fills CAPTCHAs.\n";
     }
     std::cout << "Review the form in Chrome and submit it yourself.\n";
     return 0;
