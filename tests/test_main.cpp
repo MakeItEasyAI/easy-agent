@@ -16,6 +16,7 @@
 #include "actions/move_files.h"
 #include "actions/open_actions.h"
 #include "actions/registry.h"
+#include "actions/web_actions.h"
 #include "cli/console_confirmer.h"
 #include "core/confirmer.h"
 #include "actions/path_utils.h"
@@ -1010,6 +1011,21 @@ int main() {
         bad.id = "b";
         bad.steps = {easy::core::Step{"browser_open", {{"url", "https://a.com"}}, ""}};
         check(!v.validate(bad).ok, "a removed/unknown action (browser_open) is rejected");
+    }
+
+    // --- web actions (extension-backed) are registered and validated ---
+    {
+        const auto registry = easy::actions::makeDefaultRegistry();
+        check(registry.find("web_click") && registry.find("web_fill"),
+              "web_click and web_fill are registered");
+        easy::actions::WebClickAction click;
+        check(!click.checkParams({}).empty(), "web_click needs text");
+        check(click.checkParams({{"text", "Notifications"}}).empty(), "web_click with text is ok");
+        easy::actions::WebFillAction fill;
+        check(!fill.checkParams({{"field", "Password"}, {"value", "x"}}).empty(),
+              "web_fill refuses password fields");
+        check(fill.checkParams({{"field", "Name"}, {"value", "Nikhil"}}).empty(),
+              "web_fill with field+value is ok");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";

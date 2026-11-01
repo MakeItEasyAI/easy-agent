@@ -4,6 +4,7 @@
 #include "actions/list_files.h"
 #include "actions/move_files.h"
 #include "actions/open_actions.h"
+#include "actions/web_actions.h"
 
 namespace easy::actions {
 
@@ -32,6 +33,8 @@ ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps,
     registry.add(std::make_unique<OpenUrlAction>());
     registry.add(std::make_unique<ReadPdfAction>());
     registry.add(std::make_unique<AiAnswerAction>(std::move(ai)));
+    registry.add(std::make_unique<WebClickAction>());
+    registry.add(std::make_unique<WebFillAction>());
     return registry;
 }
 

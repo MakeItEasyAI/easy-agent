@@ -29,6 +29,7 @@ add_library(easy_core
     src/actions/registry.cpp
     src/actions/open_actions.cpp
     src/actions/document_actions.cpp
+    src/actions/web_actions.cpp
     src/platform/launch.cpp
     src/core/safety_guard.cpp
     src/core/replay_engine.cpp
