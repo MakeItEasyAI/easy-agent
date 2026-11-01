@@ -18,6 +18,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 # Core library (everything except main) so tests can link it.
 add_library(easy_core
     src/cli/cli.cpp
+    src/native/native_host.cpp
     src/storage/recipe_json.cpp
     src/storage/config.cpp
     src/storage/recipe_store.cpp
