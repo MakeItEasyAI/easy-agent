@@ -26,7 +26,7 @@ private:
     std::map<std::string, std::unique_ptr<Action>> actions_;
 };
 
-// Registry with all built-in actions (files, apps/URLs, ui_*, read_pdf, ai_answer).
+// Registry with all built-in actions (files, apps/URLs, read_pdf, ai_answer).
 // allowedApps: apps that open_app may start without asking (from config).
 // ai:          how ai_answer reaches the AI model (null = ai_answer reports no AI).
 ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps = {},

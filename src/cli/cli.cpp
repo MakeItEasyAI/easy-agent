@@ -19,7 +19,6 @@
 #include "core/validator.h"
 #include "models/gemini_provider.h"
 #include "models/model_factory.h"
-#include "platform/ui_automation.h"
 #include "storage/config.h"
 #include "storage/recipe_json.h"
 #include "storage/storage.h"
@@ -627,21 +626,6 @@ int run(int argc, char** argv) {
     if (cmd == "learn") return learnCommand(argc, argv);
     if (cmd == "run") return runCommand(argc, argv);
     if (cmd == "list") return listCommand();
-    if (cmd == "inspect") {
-        if (argc < 3) {
-            std::cerr << "Usage: easy inspect \"<app name>\"   e.g. easy inspect \"Google Chrome\"\n";
-            return 1;
-        }
-        std::string error;
-        const auto lines = platform::uiInspect(argv[2], error);
-        if (!error.empty()) {
-            std::cerr << "Error: " << error << "\n";
-            return 1;
-        }
-        std::cout << "What easy can see in " << argv[2] << "'s front window:\n";
-        for (const std::string& l : lines) std::cout << l << "\n";
-        return 0;
-    }
     if (cmd == "show") return showCommand(argc, argv);
     if (cmd == "plan") return planCommand(argc, argv);
 
