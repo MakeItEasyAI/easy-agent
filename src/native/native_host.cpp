@@ -1,6 +1,8 @@
 #include "native/native_host.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <ctime>
 #include <optional>
 #include <string>
 
@@ -9,7 +11,9 @@
 #include "native/browser_link.h"   // agentSocketPath()
 
 #if defined(__APPLE__) || defined(__linux__)
+#include <fcntl.h>
 #include <poll.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -37,6 +41,26 @@ namespace {
 constexpr std::uint32_t kMaxMessage = 64u * 1024 * 1024;
 
 #if defined(EASY_HAVE_BRIDGE)
+
+// Diagnostic log file next to the socket (~/.makeiteasy/bridge.log). The native
+// host must never log to stdout (reserved for the Chrome protocol), so we
+// append to a file instead. The extension forwards its own logs here too, so
+// one file shows the whole terminal<->bridge<->extension story.
+std::string bridgeLogPath() {
+    const std::string s = agentSocketPath();
+    const auto slash = s.find_last_of('/');
+    return (slash == std::string::npos ? std::string(".") : s.substr(0, slash)) + "/bridge.log";
+}
+
+void logToFile(const std::string& msg) {
+    std::FILE* f = std::fopen(bridgeLogPath().c_str(), "a");
+    if (!f) return;
+    std::time_t t = std::time(nullptr);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%H:%M:%S", std::localtime(&t));
+    std::fprintf(f, "[%s] %s\n", ts, msg.c_str());
+    std::fclose(f);
+}
 
 bool readExact(int fd, void* buf, std::size_t n) {
     auto* p = static_cast<unsigned char*>(buf);
@@ -94,44 +118,91 @@ bool sendLine(int fd, const json& message) {
     return true;
 }
 
+// Handles non-result messages from the extension: records its logs so they
+// land in bridge.log, and answers pings.
+void handleAux(const json& m) {
+    const std::string type = m.value("type", "");
+    if (type == "log") logToFile("ext: " + m.value("text", std::string()));
+    else if (type == "ping") writeToChrome({{"type", "pong"}, {"agent", "easy"}});
+}
+
+// Result of asking the extension to run one command.
+enum class Ask { Ok, Timeout, Closed };
+
 // Sends a command to the extension and waits for the matching {type:result,id}.
-// Skips anything else Chrome sends. Returns false if Chrome's pipe closed.
-bool askChrome(int id, const json& request, json& result) {
+// Skips anything else Chrome sends (keepalive/pong/log). Times out rather than
+// blocking forever if the extension's worker never replies (e.g. it was put to
+// sleep mid-command), so the terminal always gets an answer.
+Ask askChrome(int id, const json& request, json& result) {
     json cmd = request;
     cmd["type"] = "command";
     cmd["id"] = id;
-    if (!writeToChrome(cmd)) return false;
+    logToFile("-> extension: action=" + request.value("action", std::string("?")) +
+              " id=" + std::to_string(id));
+    if (!writeToChrome(cmd)) return Ask::Closed;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(25);
     while (true) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) { logToFile("!! TIMEOUT waiting for extension id=" + std::to_string(id)); return Ask::Timeout; }
+        const auto remainingMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        pollfd p{0, POLLIN, 0};
+        const int r = ::poll(&p, 1, static_cast<int>(remainingMs));
+        if (r < 0) return Ask::Closed;
+        if (r == 0) { logToFile("!! TIMEOUT (poll) waiting for extension id=" + std::to_string(id)); return Ask::Timeout; }
         auto m = readFromChrome();
-        if (!m) return false;
+        if (!m) { logToFile("!! Chrome pipe closed while waiting id=" + std::to_string(id)); return Ask::Closed; }
         if (m->value("type", "") == "result" && m->value("id", -1) == id) {
+            logToFile("<- extension replied id=" + std::to_string(id));
             result = m->value("result", json());
-            return true;
+            return Ask::Ok;
         }
-        // ignore unrelated messages (e.g. a hello/ping)
+        handleAux(*m);   // log/ping while we wait
+    }
+}
+
+// Answers pings over stdio until Chrome closes the pipe. Used by a non-owner
+// bridge so a one-shot status check still gets a reply without touching the
+// socket the owner holds.
+void servePingsThenExit() {
+    while (auto m = readFromChrome()) {
+        if (m->value("type", "") == "ping") writeToChrome({{"type", "pong"}, {"agent", "easy"}});
     }
 }
 
 int runBridge() {
     const std::string path = agentSocketPath();
-    ::unlink(path.c_str());
+    const std::string lockPath = path + ".lock";
 
+    // Singleton guard. Chrome may spawn several native-host processes (initial
+    // connect, onDisconnect retry, keep-alive alarm). Only the one holding this
+    // lock owns the socket; the rest answer pings and stay out of the way, so
+    // they never unlink a live socket out from under the owner.
+    const int lockFd = ::open(lockPath.c_str(), O_CREAT | O_RDWR, 0600);
+    if (lockFd < 0) { servePingsThenExit(); return 0; }
+    if (::flock(lockFd, LOCK_EX | LOCK_NB) != 0) {
+        ::close(lockFd);
+        logToFile("bridge ping-only (another bridge owns the socket)");
+        servePingsThenExit();   // another bridge owns the socket
+        return 0;
+    }
+
+    ::unlink(path.c_str());
     const int listenFd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listenFd < 0) return 1;
+    if (listenFd < 0) { ::flock(lockFd, LOCK_UN); ::close(lockFd); return 1; }
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path.c_str());
     if (::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        // Another bridge already owns the socket (e.g. this process was started
-        // just to answer a one-shot ping). Serve ping over stdio and exit.
         ::close(listenFd);
-        while (auto m = readFromChrome()) {
-            if (m->value("type", "") == "ping") writeToChrome({{"type", "pong"}, {"agent", "easy"}});
-        }
+        ::flock(lockFd, LOCK_UN);
+        ::close(lockFd);
+        servePingsThenExit();
         return 0;
     }
     ::chmod(path.c_str(), 0600);   // only this user
     ::listen(listenFd, 4);
+    logToFile("bridge OWNER up, serving socket");
 
     int client = -1;
     std::string clientBuf;
@@ -155,7 +226,7 @@ int runBridge() {
         if (fds[0].revents & POLLIN) {
             auto m = readFromChrome();
             if (!m) break;   // Chrome / extension closed: shut down the bridge
-            if (m->value("type", "") == "ping") writeToChrome({{"type", "pong"}, {"agent", "easy"}});
+            handleAux(*m);   // record extension logs / answer pings
         }
         if (fds[1].revents & POLLIN) {
             const int c = ::accept(listenFd, nullptr, nullptr);
@@ -163,6 +234,7 @@ int runBridge() {
                 if (client >= 0) ::close(client);   // one terminal at a time
                 client = c;
                 clientBuf.clear();
+                logToFile("terminal connected");
             }
         }
         if (client >= 0 && n == 3 && (fds[2].revents & POLLIN)) {
@@ -184,16 +256,27 @@ int runBridge() {
                     continue;
                 }
                 json result;
-                if (!askChrome(nextId++, req, result)) {
+                const Ask st = askChrome(nextId++, req, result);
+                if (st == Ask::Ok) {
+                    sendLine(client, {{"result", result}});
+                } else if (st == Ask::Timeout) {
+                    // Worker didn't answer; keep serving so the next try works.
+                    sendLine(client, {{"error", "the browser extension did not respond (it may "
+                                               "be asleep). Keep the form tab in front and retry."}});
+                } else {
                     sendLine(client, {{"error", "browser closed"}});
-                    ::unlink(path.c_str());
-                    return 0;   // Chrome gone
+                    goto cleanup;   // Chrome gone
                 }
-                sendLine(client, {{"result", result}});
             }
         }
     }
+
+cleanup:
+    if (client >= 0) ::close(client);
+    ::close(listenFd);
     ::unlink(path.c_str());
+    ::flock(lockFd, LOCK_UN);
+    ::close(lockFd);
     return 0;
 }
 

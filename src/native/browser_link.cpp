@@ -1,12 +1,16 @@
 #include "native/browser_link.h"
 
 #include <chrono>
+#include <iostream>
 #include <string>
+#include <thread>
 
 #include "actions/path_utils.h"
 
 #if defined(__APPLE__) || defined(__linux__)
+#include <cerrno>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 #define EASY_HAVE_UNIX_SOCKETS 1
@@ -24,26 +28,44 @@ BrowserLink::~BrowserLink() { close(); }
 
 bool BrowserLink::open(std::string& error) {
     const std::string path = agentSocketPath();
-    fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd_ < 0) {
-        error = "could not create a socket";
-        return false;
-    }
-    sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
-    if (path.size() >= sizeof(addr.sun_path)) {
+    if (path.size() >= sizeof(sockaddr_un{}.sun_path)) {
         error = "socket path too long";
-        close();
         return false;
     }
-    std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path.c_str());
-    if (::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        error = "the browser bridge is not running. Open Chrome with the easy-agent extension "
-                "loaded, and a form in the front tab, then try again.";
-        close();
-        return false;
+    // Chrome may have let the extension's service worker sleep, which takes the
+    // bridge (and this socket) down with it. A keep-alive alarm in the
+    // extension wakes it within ~30s, so wait and retry rather than failing the
+    // instant the socket is missing.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(40);
+    bool announced = false;
+    for (;;) {
+        fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd_ < 0) {
+            error = "could not create a socket";
+            return false;
+        }
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path.c_str());
+        if (::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+            // Don't let a silent bridge block recv() forever; wake every 2s so
+            // command() can enforce its own deadline.
+            timeval tv{2, 0};
+            ::setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            return true;
+        }
+        close();   // resets fd_ to -1 before the next attempt
+        if (std::chrono::steady_clock::now() >= deadline) {
+            error = "the browser bridge is not running. Open Chrome with the easy-agent extension "
+                    "loaded, and a form in the front tab, then try again.";
+            return false;
+        }
+        if (!announced) {
+            std::cerr << "Waking the Chrome extension (up to ~30s)...\n";
+            announced = true;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-    return true;
 }
 
 bool BrowserLink::command(const json& request, json& result, std::string& error) {
@@ -62,21 +84,33 @@ bool BrowserLink::command(const json& request, json& result, std::string& error)
         sent += static_cast<std::size_t>(n);
     }
 
-    // Read until a newline (one JSON response). Big forms can take a while.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    // Read until a newline (one JSON response). The bridge answers within ~25s
+    // even when the extension is asleep, so bound the wait and report cleanly
+    // instead of hanging forever.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     std::size_t nl;
     while ((nl = buf_.find('\n')) == std::string::npos) {
         char chunk[8192];
         const ssize_t n = ::recv(fd_, chunk, sizeof(chunk), 0);
-        if (n <= 0) {
+        if (n > 0) {
+            buf_.append(chunk, static_cast<std::size_t>(n));
+            continue;
+        }
+        if (n == 0) {
             error = "the browser bridge closed the connection";
             return false;
         }
-        buf_.append(chunk, static_cast<std::size_t>(n));
-        if (std::chrono::steady_clock::now() > deadline) {
-            error = "the browser did not respond in time";
-            return false;
+        // n < 0: a 2s recv timeout (EAGAIN) just lets us re-check the deadline.
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (std::chrono::steady_clock::now() > deadline) {
+                error = "the browser did not respond in time (reload the extension and keep the "
+                        "form tab in front)";
+                return false;
+            }
+            continue;
         }
+        error = "lost connection to the browser bridge";
+        return false;
     }
     const std::string response = buf_.substr(0, nl);
     buf_.erase(0, nl + 1);
