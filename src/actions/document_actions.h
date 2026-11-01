@@ -40,8 +40,7 @@ public:
     std::string name() const override { return "read_pdf"; }
     std::string description() const override {
         return "Read the text of a PDF file on this computer (no AI). params: path (required, "
-               "e.g. \"~/Documents/resume.pdf\"). outputs: the text; give it a save_as name and "
-               "pass it to ai_answer.";
+               "e.g. \"~/Documents/resume.pdf\"). outputs: the text of the file.";
     }
     core::RiskLevel risk() const override { return core::RiskLevel::Safe; }   // read-only
     std::string checkParams(const Params& params) const override;
@@ -58,7 +57,7 @@ public:
         return "Answer a question, summarise, or list details from a document, and show the answer "
                "to the user. params: question (required, e.g. \"List all details: name, email, "
                "phone, education, experience, skills\"), and EITHER file (a PDF path on this "
-               "computer, e.g. \"~/Documents/resume.pdf\") OR text (usually \"$name\" from an "
+               "computer, e.g. \"~/Documents/resume.pdf\") OR text (the saved output of an "
                "earlier step).";
     }
     core::RiskLevel risk() const override { return core::RiskLevel::Confirm; }
