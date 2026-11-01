@@ -15,7 +15,6 @@
 #include <string>
 #include <vector>
 
-#include "actions/browser_actions.h"
 #include "actions/document_actions.h"
 #include "actions/open_actions.h"
 #include "actions/path_utils.h"
@@ -303,29 +302,18 @@ private:
 // Runs a recipe through the safety guard + confirmations. Prints progress.
 // Returns "" when it finished, otherwise why it stopped. `lastMessage` gets
 // what the last step reported (e.g. an AI answer), for the session history.
-// If the recipe used the agent's browser, it stays open for you to review
-// (and submit yourself), and is closed when you press Enter.
 std::string runRecipe(core::Recipe& recipe, const storage::Config& config, ConsoleConfirmer& confirmer,
                       const std::string& modelSpec = "", std::string* lastMessage = nullptr) {
     // ai_answer steps reach the AI through this; it is only created if such a step runs.
     auto ai = std::make_shared<actions::AiAccess>([&](std::string& error) {
         return models::makeModel(chooseModelSpec(modelSpec, config.model), error, std::cerr);
     });
-    auto browser = std::make_shared<actions::BrowserSession>();   // started only by browser_* steps
-    const auto registry = actions::makeDefaultRegistry(config.allowed_apps, ai, browser);
+    const auto registry = actions::makeDefaultRegistry(config.allowed_apps, ai);
     const core::FolderSafetyGuard guard(config.allowed_folders);
     core::SimpleReplayEngine engine(registry, guard, confirmer, std::cout);
 
     std::cout << "Running " << recipe.id << " (" << recipe.steps.size() << " steps)\n";
     const core::ReplayResult result = engine.replay(recipe);
-
-    if (browser->started()) {
-        std::cout << std::flush;
-        confirmer.askLine(
-            "\nThe agent's browser is open. Check the page and submit it yourself if you want.\n"
-            "Press Enter here when you are done (this closes the agent's browser).\n>");
-        browser->close();
-    }
 
     if (!result.ok) {
         std::cout << std::flush;

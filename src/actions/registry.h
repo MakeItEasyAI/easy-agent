@@ -13,7 +13,6 @@
 namespace easy::actions {
 
 class AiAccess;
-class BrowserSession;
 
 class ActionRegistry {
 public:
@@ -27,13 +26,10 @@ private:
     std::map<std::string, std::unique_ptr<Action>> actions_;
 };
 
-// Registry with all built-in actions (files, apps/URLs, read_pdf, ai_answer, browser_*).
+// Registry with all built-in actions (files, apps/URLs, read_pdf, ai_answer).
 // allowedApps: apps that open_app may start without asking (from config).
 // ai:          how ai_answer reaches the AI model (null = ai_answer reports no AI).
-// browser:     the agent browser shared by browser_* steps (created if null);
-//              pass your own to close it when the run is over.
 ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps = {},
-                                   std::shared_ptr<AiAccess> ai = nullptr,
-                                   std::shared_ptr<BrowserSession> browser = nullptr);
+                                   std::shared_ptr<AiAccess> ai = nullptr);
 
 }  // namespace easy::actions
