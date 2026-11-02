@@ -81,6 +81,7 @@ std::string saveConfigFile(const std::string& path, const Config& config) {
     nlohmann::json j = {{"allowed_folders", config.allowed_folders}};
     if (!config.model.empty()) j["model"] = config.model;
     if (!config.allowed_apps.empty()) j["allowed_apps"] = config.allowed_apps;
+    if (!config.resume.empty()) j["resume"] = config.resume;
     std::ofstream out(path, std::ios::trunc);
     if (!out) return "cannot write " + path;
     out << j.dump(2) << "\n";

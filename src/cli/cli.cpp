@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <thread>
@@ -47,6 +48,7 @@ void printUsage() {
                  "  easy fill form [url] [resume.pdf]  open the form (if a url is given) and fill it\n"
                  "                                  from your resume (needs the easy-agent extension)\n"
                  "  easy run <name | file.json>     run a saved recipe or a recipe file (no AI)\n"
+                 "  easy model                      pick the AI model from a menu (saves it)\n"
                  "  easy list                       list saved recipes\n"
                  "  easy show <name | file.json>    print the steps of a recipe\n"
                  "  easy plan \"<task>\"             only show what the AI would do (runs nothing)\n"
@@ -552,6 +554,7 @@ void printSessionHelp() {
                  "  move all PDFs from ~/Downloads/easy_test to ~/Documents/easy_bills\n"
                  "Other commands:\n"
                  "  fill form        fill the form in your Chrome tab from your resume\n"
+                 "  model            pick which AI model to use (local or cloud)\n"
                  "  list             show saved recipes\n"
                  "  forget           forget this session's earlier tasks (start fresh)\n"
                  "  help             show this help\n"
@@ -811,6 +814,97 @@ std::string firstUrl(const std::string& text) {
     return text.substr(at, end - at);
 }
 
+// Lists locally-installed Ollama models (first column of `ollama list`), so the
+// picker can show the user exactly what they can run locally. Empty if Ollama
+// is not installed or has no models.
+std::vector<std::string> listOllamaModels() {
+    std::vector<std::string> out;
+#if !defined(_WIN32)
+    std::FILE* pipe = popen("ollama list 2>/dev/null", "r");
+    if (!pipe) return out;
+    char line[512];
+    bool firstLine = true;
+    while (std::fgets(line, sizeof(line), pipe)) {
+        if (firstLine) { firstLine = false; continue; }   // skip the header row
+        std::string s(line);
+        std::size_t i = 0;
+        while (i < s.size() && !std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+        if (i > 0) out.push_back(s.substr(0, i));
+    }
+    pclose(pipe);
+#endif
+    return out;
+}
+
+// Shows a numbered menu of AI models and saves the chosen one to the config.
+// Local (Ollama) models are listed first (private); Gemini is offered as a
+// cloud option that falls back to local. Returns the chosen spec, or "" if the
+// user kept the current model. Default stays local.
+std::string chooseModelInteractive(const std::string& configPath) {
+    auto loaded = storage::loadConfigFile(configPath);
+    if (!loaded.config) {
+        std::cerr << "Could not read your config (" << configPath << "): " << loaded.error << "\n";
+        return "";
+    }
+    storage::Config config = *loaded.config;
+    std::cout << "Current AI model: "
+              << (config.model.empty() ? "ollama (local, default)" : config.model) << "\n\n";
+
+    const std::vector<std::string> locals = listOllamaModels();
+    std::vector<std::string> specs;   // menu number -> spec
+
+    std::cout << "Choose the AI model:\n";
+    std::cout << "  Local (Ollama) - private, nothing leaves your computer:\n";
+    int n = 1;
+    if (locals.empty()) {
+        std::cout << "    " << n++ << ") ollama (local default)\n";
+        specs.push_back("ollama");
+    } else {
+        for (const std::string& m : locals) {
+            std::cout << "    " << n++ << ") ollama:" << m << "\n";
+            specs.push_back("ollama:" + m);
+        }
+    }
+    std::cout << "  Cloud:\n";
+    std::cout << "    " << n++ << ") gemini  (needs GEMINI_API_KEY; falls back to local)\n";
+    specs.push_back("gemini,ollama");
+    std::cout << "  0) keep current\n";
+
+    ConsoleConfirmer confirmer;
+    const std::string answer = confirmer.askLine("\nEnter a number:");
+    if (answer.empty() || answer == "0") {
+        std::cout << "Kept current model.\n";
+        return "";
+    }
+    int choice = -1;
+    try { choice = std::stoi(answer); } catch (...) { choice = -1; }
+    if (choice < 1 || choice > static_cast<int>(specs.size())) {
+        std::cout << "That is not one of the numbers; kept current model.\n";
+        return "";
+    }
+    const std::string spec = specs[static_cast<std::size_t>(choice - 1)];
+    config.model = spec;
+    if (const std::string err = storage::saveConfigFile(configPath, config); !err.empty()) {
+        std::cerr << "Could not save your choice: " << err << "\n";
+        return "";
+    }
+    std::cout << "Saved. Now using: " << spec << "\n";
+    if (spec.rfind("gemini", 0) == 0 && !std::getenv("GEMINI_API_KEY")) {
+        std::cout << "Note: set GEMINI_API_KEY in your environment, or it falls back to local.\n";
+    }
+    return spec;
+}
+
+// easy model: pick the AI model from a menu and save it as the default.
+int modelCommand(int argc, char** argv) {
+    std::string configPath = storage::defaultConfigPath();
+    for (int i = 2; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--config") configPath = argv[i + 1];
+    }
+    chooseModelInteractive(configPath);
+    return 0;
+}
+
 // easy  (no arguments): an interactive session. Keeps asking for the next task
 // until you type exit. The AI model stays loaded between tasks.
 int sessionCommand(const std::string& configPath, const std::string& modelSpec) {
@@ -821,9 +915,10 @@ int sessionCommand(const std::string& configPath, const std::string& modelSpec) 
     std::unique_ptr<AiSession> ai;   // started on the first task that needs it
     std::deque<std::string> history; // what happened in this session (last few tasks)
     constexpr std::size_t kHistory = 5;
-    const std::string spec = chooseModelSpec(modelSpec, config->model);
+    std::string activeModel = modelSpec;   // can be changed mid-session with "model"
+    const std::string spec = chooseModelSpec(activeModel, config->model);
     std::cout << "easy agent ready (AI: " << (spec.empty() ? "ollama (local)" : spec)
-              << "). Type a task, or: list, help, forget, exit\n";
+              << "). Type a task, or: list, help, model, forget, exit\n";
 
     while (true) {
         const std::string line = confirmer.askLine("\n>");
@@ -846,6 +941,11 @@ int sessionCommand(const std::string& configPath, const std::string& modelSpec) 
             std::cout << "Forgot this session's earlier tasks.\n";
             continue;
         }
+        if (word == "model") {
+            const std::string chosen = chooseModelInteractive(configPath);
+            if (!chosen.empty()) { activeModel = chosen; ai.reset(); }   // use it from the next task
+            continue;
+        }
         // Form-fill intent ALWAYS uses the real Chrome + extension, never the AI
         // planner's agent-browser. Catch the common phrasings and any pasted URL
         // so "fill this form", "fill it with the chrome extension", or a bare
@@ -859,7 +959,7 @@ int sessionCommand(const std::string& configPath, const std::string& modelSpec) 
                                     low.find("chrome extension") != std::string::npos ||
                                     !formUrl.empty();
             if (formIntent) {
-                fillFormCommand(formUrl, "", configPath, modelSpec);
+                fillFormCommand(formUrl, "", configPath, activeModel);
                 continue;
             }
         }
@@ -869,7 +969,7 @@ int sessionCommand(const std::string& configPath, const std::string& modelSpec) 
             context += std::to_string(i + 1) + ". " + history[i] + "\n";
         }
         std::string outcome;
-        learnTask(line, *config, modelSpec, confirmer, ai, context, &outcome);   // prints how it went
+        learnTask(line, *config, activeModel, confirmer, ai, context, &outcome);   // prints how it went
 
         history.push_back("task: \"" + line + "\" -> " + outcome);
         if (history.size() > kHistory) history.pop_front();
@@ -907,6 +1007,7 @@ int run(int argc, char** argv) {
     }
     if (cmd == "native-host") return native::runNativeHost();
     if (cmd == "fill") return fillFormCommand(argc, argv);
+    if (cmd == "model") return modelCommand(argc, argv);
     if (cmd == "learn") return learnCommand(argc, argv);
     if (cmd == "run") return runCommand(argc, argv);
     if (cmd == "list") return listCommand();
