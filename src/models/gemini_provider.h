@@ -15,10 +15,10 @@ namespace easy::models {
 
 class GeminiProvider : public ModelProvider {
 public:
-    // "latest" alias tracks Google's current flash model, so this does not go
-    // stale when versions change. Override with:  export GEMINI_MODEL=<name>
-    // or choose a specific one:  --model gemini:gemini-2.5-flash
-    static constexpr const char* kDefaultModel = "gemini-flash-latest";
+    // A working, fast "latest" alias (verified responding where gemini-2.5-flash
+    // is retired for new users and gemini-flash-latest/3.8 were overloaded).
+    // Override for more capability:  --model gemini:gemini-3-flash-preview
+    static constexpr const char* kDefaultModel = "gemini-flash-lite-latest";
 
     GeminiProvider(std::string apiKey, std::string model);
 
