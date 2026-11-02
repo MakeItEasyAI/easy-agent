@@ -74,9 +74,11 @@ ModelReply GeminiProvider::askText(const std::string& prompt) { return send(prom
 ModelReply GeminiProvider::send(const std::string& prompt, bool jsonOutput) {
     const std::string url = "https://generativelanguage.googleapis.com/v1beta/models/" +
                             model_ + ":generateContent";
+    HttpOptions options;
+    options.timeout_seconds = 45;   // if the network stalls the call, fail over to local sooner
     const HttpResponse http = httpPostJson(
         url, {"Content-Type: application/json", "x-goog-api-key: " + apiKey_},
-        buildGeminiRequest(prompt, jsonOutput));
+        buildGeminiRequest(prompt, jsonOutput), options);
 
     if (!http.ok) return {false, "", "could not reach Gemini: " + http.error};
     return parseGeminiResponse(http.status, http.body);
