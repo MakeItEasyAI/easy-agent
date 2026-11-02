@@ -959,18 +959,24 @@ int sessionCommand(const std::string& configPath, const std::string& modelSpec) 
             if (!chosen.empty()) { activeModel = chosen; ai.reset(); }   // use it from the next task
             continue;
         }
-        // Form-fill intent ALWAYS uses the real Chrome + extension, never the AI
-        // planner's agent-browser. Catch the common phrasings and any pasted URL
-        // so "fill this form", "fill it with the chrome extension", or a bare
-        // form link all take the same, predictable path.
+        // Only an explicit "fill ... form/resume" request uses the dedicated
+        // resume form-filler. General tasks (incl. "use the chrome extension to
+        // do X") go to the planner, which can open pages and use web_click /
+        // web_fill. This avoids hijacking a sentence that merely mentions a form
+        // or the extension.
         {
             std::string low = line;
             for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const std::string formUrl = firstUrl(line);
-            const bool formIntent = low.find("fill") != std::string::npos ||
-                                    low.find("form") != std::string::npos ||
-                                    low.find("chrome extension") != std::string::npos ||
-                                    !formUrl.empty();
+            const bool saysFill = low.find("fill") != std::string::npos;
+            const bool formIntent = saysFill &&
+                                    (low.find("form") != std::string::npos ||
+                                     low.find("resume") != std::string::npos ||
+                                     low.find("fill it") != std::string::npos ||
+                                     low.find("fill this") != std::string::npos ||
+                                     low.find("fill in") != std::string::npos ||
+                                     low.find("fill out") != std::string::npos ||
+                                     !formUrl.empty());
             if (formIntent) {
                 fillFormCommand(formUrl, "", configPath, activeModel);
                 continue;
