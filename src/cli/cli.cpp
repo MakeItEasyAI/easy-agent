@@ -889,8 +889,21 @@ std::string chooseModelInteractive(const std::string& configPath) {
         return "";
     }
     std::cout << "Saved. Now using: " << spec << "\n";
-    if (spec.rfind("gemini", 0) == 0 && !std::getenv("GEMINI_API_KEY")) {
-        std::cout << "Note: set GEMINI_API_KEY in your environment, or it falls back to local.\n";
+    if (spec.rfind("gemini", 0) == 0 && models::geminiApiKey().empty()) {
+        std::cout << "\nGemini needs an API key. Paste it now (it will show as you type),\n"
+                     "or press Enter to skip and set GEMINI_API_KEY yourself later.\n";
+        const std::string key = confirmer.askLine("Gemini API key:");
+        if (!key.empty()) {
+            const std::string err = models::saveGeminiApiKey(key);
+            if (err.empty()) {
+                std::cout << "Saved your key in " << models::geminiKeyFilePath()
+                          << " (only you can read it; never in git or config.json).\n";
+            } else {
+                std::cerr << "Could not save the key: " << err << "\n";
+            }
+        } else {
+            std::cout << "No key saved. Gemini will fall back to local until you set one.\n";
+        }
     }
     return spec;
 }

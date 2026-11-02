@@ -1,9 +1,16 @@
 #include "models/gemini_provider.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
+#include "actions/path_utils.h"
 #include "models/http.h"
 
 namespace easy::models {
@@ -80,15 +87,45 @@ std::unique_ptr<ModelProvider> makeGeminiFromEnv(std::string& error) {
         error = "this build has no HTTPS support (libcurl was not found when building)";
         return nullptr;
     }
-    const char* key = std::getenv("GEMINI_API_KEY");
-    if (key == nullptr || std::string(key).empty()) {
-        error = "GEMINI_API_KEY is not set";
+    const std::string key = geminiApiKey();
+    if (key.empty()) {
+        error = "no Gemini API key (set GEMINI_API_KEY, or run \"easy model\" and pick Gemini)";
         return nullptr;
     }
     const char* model = std::getenv("GEMINI_MODEL");
     const std::string modelName =
         (model != nullptr && *model != '\0') ? model : GeminiProvider::kDefaultModel;
     return std::make_unique<GeminiProvider>(key, modelName);
+}
+
+std::string geminiKeyFilePath() { return actions::expandHome("~/.makeiteasy/gemini_api_key"); }
+
+std::string geminiApiKey() {
+    const char* env = std::getenv("GEMINI_API_KEY");
+    if (env != nullptr && *env != '\0') return env;   // the env var always wins
+    std::ifstream file(geminiKeyFilePath());
+    if (!file) return "";
+    std::string key;
+    std::getline(file, key);
+    const auto first = key.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    return key.substr(first, key.find_last_not_of(" \t\r\n") - first + 1);
+}
+
+std::string saveGeminiApiKey(const std::string& key) {
+    namespace fs = std::filesystem;
+    const std::string path = geminiKeyFilePath();
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    if (ec) return "cannot create folder for " + path + ": " + ec.message();
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) return "cannot write " + path;
+    out << key << "\n";
+    out.close();
+#if !defined(_WIN32)
+    ::chmod(path.c_str(), 0600);   // only this user can read the key
+#endif
+    return "";
 }
 
 }  // namespace easy::models

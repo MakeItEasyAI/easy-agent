@@ -37,7 +37,7 @@ std::unique_ptr<ModelProvider> makeOne(const std::string& spec, std::string& err
     if (provider == "gemini") {
         auto gemini = makeGeminiFromEnv(error);
         if (gemini && !model.empty()) {
-            return std::make_unique<GeminiProvider>(env("GEMINI_API_KEY"), model);
+            return std::make_unique<GeminiProvider>(geminiApiKey(), model);
         }
         return gemini;
     }

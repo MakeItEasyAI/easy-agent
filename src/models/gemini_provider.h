@@ -6,7 +6,9 @@
 #include "models/model_provider.h"
 
 // Google Gemini over HTTPS.
-//   Key:   environment variable GEMINI_API_KEY   (never stored in files)
+//   Key:   environment variable GEMINI_API_KEY, else a user-only (0600) file
+//          ~/.makeiteasy/gemini_api_key written by `easy model`. The env var
+//          always wins. The key is never stored in config.json and never in git.
 //   Model: environment variable GEMINI_MODEL      (default below)
 // The key is sent in a request header, never in the URL, and never printed.
 namespace easy::models {
@@ -33,6 +35,13 @@ private:
 // Reads GEMINI_API_KEY / GEMINI_MODEL. Returns nullptr and sets `error` if
 // the key is missing or this build has no HTTPS support.
 std::unique_ptr<ModelProvider> makeGeminiFromEnv(std::string& error);
+
+// API key handling. The environment variable GEMINI_API_KEY always takes
+// priority; otherwise the key is read from / written to a user-only (0600)
+// file in ~/.makeiteasy. The key is never put in config.json or git.
+std::string geminiKeyFilePath();                       // ~/.makeiteasy/gemini_api_key
+std::string geminiApiKey();                            // env, else the saved file, else ""
+std::string saveGeminiApiKey(const std::string& key);  // write the file (0600); "" or an error
 
 // Pure helpers (no network) so they can be unit-tested.
 std::string buildGeminiRequest(const std::string& prompt, bool jsonOutput = true);
