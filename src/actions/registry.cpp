@@ -32,9 +32,10 @@ ActionRegistry makeDefaultRegistry(const std::vector<std::string>& allowedApps,
     registry.add(std::make_unique<OpenAppAction>(allowedApps));
     registry.add(std::make_unique<OpenUrlAction>());
     registry.add(std::make_unique<ReadPdfAction>());
-    registry.add(std::make_unique<AiAnswerAction>(std::move(ai)));
+    registry.add(std::make_unique<AiAnswerAction>(ai));
     registry.add(std::make_unique<WebClickAction>());
     registry.add(std::make_unique<WebFillAction>());
+    registry.add(std::make_unique<WebDoAction>(ai));
     return registry;
 }
 

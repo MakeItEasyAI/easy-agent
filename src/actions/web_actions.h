@@ -1,9 +1,11 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "actions/action.h"
+#include "actions/document_actions.h"   // AiAccess
 
 // Actions that act on the web page already open in the front Google Chrome tab,
 // through the easy-agent Chrome extension. General-purpose: the AI can use them
@@ -46,6 +48,31 @@ public:
     std::vector<std::string> pathParams() const override { return {}; }
     ActionResult run(const Params& params) override;
     bool verify(const Params& params) override;
+};
+
+// web_do: reach a plain-language goal on the open page by deciding each step
+// itself (read page -> ask the AI for the next click/fill -> do it -> repeat),
+// stopping before Submit/Send/Pay/Sign in. A tiny agent-loop in one step, for
+// dynamic tasks like "search and play <song>" that a fixed recipe can't capture.
+class WebDoAction : public Action {
+public:
+    explicit WebDoAction(std::shared_ptr<AiAccess> ai) : ai_(std::move(ai)) {}
+    std::string name() const override { return "web_do"; }
+    std::string description() const override {
+        return "Reach a goal on the web page ALREADY open in Google Chrome by working out the "
+               "clicks and typing itself, step by step (uses the browser extension + AI). Use for "
+               "dynamic tasks, e.g. \"search for and play <song>\" or \"open the chat with <name> "
+               "and type <message>\". params: goal (required, plain words). It decides each step "
+               "from the live page and stops before Submit/Send/Pay/Sign in (the user does those).";
+    }
+    core::RiskLevel risk() const override { return core::RiskLevel::Confirm; }
+    std::string checkParams(const Params& params) const override;
+    std::vector<std::string> pathParams() const override { return {}; }
+    ActionResult run(const Params& params) override;
+    bool verify(const Params& params) override;
+
+private:
+    std::shared_ptr<AiAccess> ai_;
 };
 
 }  // namespace easy::actions

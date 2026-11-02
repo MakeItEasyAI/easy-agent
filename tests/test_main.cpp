@@ -1026,6 +1026,10 @@ int main() {
               "web_fill refuses password fields");
         check(fill.checkParams({{"field", "Name"}, {"value", "Nikhil"}}).empty(),
               "web_fill with field+value is ok");
+        check(registry.find("web_do"), "web_do is registered");
+        easy::actions::WebDoAction webdo(nullptr);
+        check(!webdo.checkParams({}).empty(), "web_do needs a goal");
+        check(webdo.checkParams({{"goal", "play a song"}}).empty(), "web_do with a goal is ok");
     }
 
     if (failures == 0) std::cout << "All tests passed\n";

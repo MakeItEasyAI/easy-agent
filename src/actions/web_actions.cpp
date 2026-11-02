@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
+#include "models/model_provider.h"
 #include "native/browser_link.h"
 
 namespace easy::actions {
@@ -69,5 +72,120 @@ ActionResult WebFillAction::run(const Params& params) {
 }
 
 bool WebFillAction::verify(const Params&) { return true; }
+
+std::string WebDoAction::checkParams(const Params& params) const {
+    const auto it = params.find("goal");
+    if (it == params.end() || it->second.empty()) return "web_do needs \"goal\" (what to do)";
+    return "";
+}
+
+ActionResult WebDoAction::run(const Params& params) {
+    const auto it = params.find("goal");
+    if (it == params.end() || it->second.empty()) return {false, "web_do needs \"goal\"", {}};
+    const std::string goal = it->second;
+
+    std::string error;
+    models::ModelProvider* model = ai_ ? ai_->get(error) : nullptr;
+    if (model == nullptr) return {false, error.empty() ? "no AI model available for web_do" : error, {}};
+
+    native::BrowserLink link;
+    if (!link.open(error)) return {false, error, {}};
+
+    std::vector<std::string> history;   // what we did, for the summary and the prompt
+    constexpr int kMaxSteps = 6;
+    for (int step = 0; step < kMaxSteps; ++step) {
+        // 1) Read the current page (fields + clickable items).
+        nlohmann::json page;
+        if (!link.command({{"action", "read_page"}}, page, error)) return {false, error, {}};
+
+        std::string pageText = "Fields on the page:\n";
+        if (page.is_object() && page["fields"].is_array()) {
+            for (const auto& f : page["fields"]) {
+                if (!f.is_object()) continue;
+                pageText += "- " + f.value("label", std::string());
+                if (f.contains("options") && f["options"].is_array() && !f["options"].empty()) {
+                    pageText += "  [";
+                    bool first = true;
+                    for (const auto& o : f["options"]) {
+                        if (o.is_string()) { pageText += (first ? "" : " | ") + o.get<std::string>(); first = false; }
+                    }
+                    pageText += "]";
+                }
+                pageText += "\n";
+            }
+        }
+        pageText += "Clickable items on the page:\n";
+        if (page.is_object() && page["clickables"].is_array()) {
+            for (const auto& c : page["clickables"]) {
+                if (c.is_string()) pageText += "- " + c.get<std::string>() + "\n";
+            }
+        }
+
+        std::string hist = "Steps already done:\n";
+        if (history.empty()) hist += "(none yet)\n";
+        for (const auto& h : history) hist += "- " + h + "\n";
+
+        // 2) Ask the model for the single next step.
+        const std::string prompt =
+            "You are operating an open web page to reach a goal, ONE step at a time.\n"
+            "Goal: " + goal + "\n\n" + hist + "\n" + pageText +
+            "\nReply with ONLY one JSON object for the next step, nothing else:\n"
+            "  {\"action\":\"fill\",\"field\":\"<a label shown above>\",\"value\":\"<text>\"}\n"
+            "  {\"action\":\"click\",\"text\":\"<visible text shown above; partial is fine>\"}\n"
+            "  {\"action\":\"done\"}\n"
+            "Use ONLY labels/items shown above. When the goal is reached, or the only thing left "
+            "is to Submit/Send/Pay/Sign in/Post, reply {\"action\":\"done\"} and the user will do "
+            "that final step. Do not repeat a step already done.\n";
+
+        const models::ModelReply reply = model->ask(prompt);
+        if (!reply.ok) return {false, "AI error: " + reply.error, {}};
+        const nlohmann::json act = nlohmann::json::parse(reply.text, nullptr, /*exceptions=*/false);
+        if (act.is_discarded() || !act.is_object()) return {false, "the AI's step was not usable", {}};
+
+        const std::string action = act.value("action", std::string());
+        if (action == "done" || action.empty()) break;
+
+        if (action == "fill") {
+            const std::string field = act.value("field", std::string());
+            const std::string value = act.value("value", std::string());
+            if (field.empty()) { history.push_back("(skipped a fill with no field)"); continue; }
+            nlohmann::json res;
+            if (link.command({{"action", "fill"}, {"field", field}, {"value", value}}, res, error) &&
+                res.is_object() && res.value("ok", false)) {
+                history.push_back("typed \"" + value + "\" into " + field);
+            } else {
+                history.push_back("could not fill " + field);
+                break;
+            }
+        } else if (action == "click") {
+            const std::string text = act.value("text", std::string());
+            if (text.empty()) { history.push_back("(skipped a click with no text)"); continue; }
+            nlohmann::json res;
+            if (link.command({{"action", "click"}, {"text", text}}, res, error) &&
+                res.is_object() && res.value("ok", false)) {
+                history.push_back("clicked \"" + text + "\"");
+            } else {
+                const std::string why = res.is_object() ? res.value("error", error) : error;
+                history.push_back("could not click \"" + text + "\" (" + why + ")");
+                break;
+            }
+        } else {
+            break;   // unknown action
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(900));   // let the page react
+    }
+
+    std::string msg;
+    if (history.empty()) {
+        msg = "did nothing (the AI found no step to take for: " + goal + ")";
+        return {false, msg, {}};
+    }
+    msg = "did: ";
+    for (std::size_t i = 0; i < history.size(); ++i) msg += (i ? "; " : "") + history[i];
+    msg += ". Review it in Chrome and press Send/Submit yourself if needed.";
+    return {true, msg, {}};
+}
+
+bool WebDoAction::verify(const Params&) { return true; }
 
 }  // namespace easy::actions
