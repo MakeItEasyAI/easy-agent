@@ -154,6 +154,9 @@ ActionResult WebDoAction::run(const Params& params) {
             "  {\"action\":\"done\"}\n"
             "Follow the plan: if it says to open a section first (e.g. Messages/Direct), click that "
             "BEFORE clicking a person's name - do NOT open stories or profiles by mistake.\n"
+            "If the goal includes typing/writing a message and the page has a message or text "
+            "field, you MUST use a fill action on it; do NOT reply done while the message has not "
+            "been typed yet.\n"
             "Use ONLY labels/items shown above. When the goal is reached, or the only thing left "
             "is to Submit/Send/Pay/Sign in/Post, reply {\"action\":\"done\"} and the user will do "
             "that final step. Do not repeat a step already done.\n";
