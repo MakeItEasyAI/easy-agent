@@ -91,6 +91,23 @@ ActionResult WebDoAction::run(const Params& params) {
     native::BrowserLink link;
     if (!link.open(error)) return {false, error, {}};
 
+    // First, ask the model HOW to do this (it knows how common sites work), so
+    // each later step follows a sensible plan instead of guessing from the page
+    // cold. This stops mistakes like opening a story instead of the DM inbox.
+    std::string plan;
+    {
+        const std::string planPrompt =
+            "You will operate a web page step by step (clicking and typing) to reach a goal.\n"
+            "Goal: " + goal + "\n"
+            "Using your knowledge of how such websites work, list the high-level steps in order "
+            "(what section to open, what to click, what to type). For example, to message someone "
+            "you first open the Messages/Direct inbox, then find the person, then open their chat, "
+            "then type. Do NOT include the final Submit/Send/Post/Pay/Sign in - the user does that. "
+            "Keep it to a short numbered list.";
+        const models::ModelReply planReply = model->askText(planPrompt);
+        if (planReply.ok) plan = planReply.text;
+    }
+
     std::vector<std::string> history;   // what we did, for the summary and the prompt
     constexpr int kMaxSteps = 6;
     for (int step = 0; step < kMaxSteps; ++step) {
@@ -128,11 +145,15 @@ ActionResult WebDoAction::run(const Params& params) {
         // 2) Ask the model for the single next step.
         const std::string prompt =
             "You are operating an open web page to reach a goal, ONE step at a time.\n"
-            "Goal: " + goal + "\n\n" + hist + "\n" + pageText +
+            "Goal: " + goal + "\n\n"
+            "Plan to follow (from your knowledge of such sites):\n" + (plan.empty() ? "(none)" : plan) +
+            "\n\n" + hist + "\n" + pageText +
             "\nReply with ONLY one JSON object for the next step, nothing else:\n"
             "  {\"action\":\"fill\",\"field\":\"<a label shown above>\",\"value\":\"<text>\"}\n"
             "  {\"action\":\"click\",\"text\":\"<visible text shown above; partial is fine>\"}\n"
             "  {\"action\":\"done\"}\n"
+            "Follow the plan: if it says to open a section first (e.g. Messages/Direct), click that "
+            "BEFORE clicking a person's name - do NOT open stories or profiles by mistake.\n"
             "Use ONLY labels/items shown above. When the goal is reached, or the only thing left "
             "is to Submit/Send/Pay/Sign in/Post, reply {\"action\":\"done\"} and the user will do "
             "that final step. Do not repeat a step already done.\n";
