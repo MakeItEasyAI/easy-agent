@@ -54,6 +54,10 @@ namespace {
 class Spinner {
 public:
     explicit Spinner(std::string label) : label_(std::move(label)) {
+        // Only animate on a real terminal; when piped to a file just print once.
+#if !defined(_WIN32)
+        if (!isatty(STDOUT_FILENO)) { std::cout << label_ << "...\n" << std::flush; running_ = false; return; }
+#endif
         worker_ = std::thread([this] {
             const char frames[] = {'|', '/', '-', '\\'};
             for (std::size_t i = 0; running_.load(); ++i) {
@@ -1027,29 +1031,48 @@ int collectPeopleAtCompany(const std::string& company, const std::string& resume
         return 0;
     }
 
-    // Two searches: first only your network (1st and 2nd degree), then
-    // everyone, so network contacts always come first in the file.
+    // Three searches, most valuable first: only 1st-degree connections, then
+    // 1st+2nd, then everyone. Each read is one results page (10 people), so a
+    // big company's 1st-degree contacts would otherwise be buried below the
+    // 2nd-degree ones. Stop early once we have enough profiles.
     const std::string base = "https://www.linkedin.com/search/results/people/?keywords=" +
-                             urlEncode(company) + "&origin=GLOBAL_SEARCH_HEADER";
-    const std::string networkUrl = base + "&network=%5B%22F%22%2C%22S%22%5D";
+                             urlEncode(company);
+    const std::string firstOnlyUrl = base + "&network=%5B%22F%22%5D&origin=FACETED_SEARCH";
+    const std::string networkUrl = base + "&network=%5B%22F%22%2C%22S%22%5D&origin=FACETED_SEARCH";
+    const std::string allUrl = base + "&origin=GLOBAL_SEARCH_HEADER";
     std::string pageText;
     std::string linkList;
     std::string error;
-    for (const std::string& url : {networkUrl, base}) {
+    std::set<std::string> profileLinks;
+    std::string progress;
+    const std::pair<const char*, std::string> searches[] = {
+        {"1st", firstOnlyUrl}, {"1st+2nd", networkUrl}, {"all", allUrl}};
+    for (const auto& [label, url] : searches) {
+        // Always read the two network pages; the "everyone" page only if they
+        // did not already give us enough people to pick 10 from.
+        if (std::string(label) == "all" &&
+            profileLinks.size() >= static_cast<std::size_t>(kPeoplePerCompany))
+            break;
         std::string text;
         nlohmann::json links;
         if (!readUrlContent(link, url, text, links, error)) {
-            // Fine for the network-only search to be empty; carry on.
+            // Fine for a filtered search to be empty; carry on to the next.
+            progress += std::string(label) + ": none  ";
             continue;
         }
-        pageText += (pageText.empty() ? "" : "\n\n--- NEXT SEARCH PAGE ---\n\n") + text;
+        pageText += (pageText.empty() ? "" : "\n\n--- NEXT SEARCH PAGE (" + std::string(label) +
+                                              " degree) ---\n\n") + text;
+        int added = 0;
         for (const auto& l : links) {
             if (!l.is_object()) continue;
             const std::string href = l.value("href", std::string());
             if (href.find("/in/") == std::string::npos) continue;   // only profiles
+            if (profileLinks.insert(href).second) ++added;
             linkList += "- " + l.value("text", std::string()) + " => " + href + "\n";
         }
+        progress += std::string(label) + ": " + std::to_string(added) + "  ";
     }
+    std::cout << "  " << company << " search pages -> " << progress << "\n";
     if (pageText.empty()) {
         std::cerr << "  " << company << ": " << error << "\n";
         return 0;
@@ -1062,8 +1085,10 @@ int collectPeopleAtCompany(const std::string& company, const std::string& resume
         "  \"name\"     : the person's name\n"
         "  \"headline\" : their title / headline, e.g. \"Senior Recruiter at Acme\"\n"
         "  \"link\"     : their profile URL from LINKS (contains /in/). \"\" if none fits.\n"
-        "  \"network\"  : \"1st\", \"2nd\", or \"3rd+\" - the degree marker shown next to the "
-        "name (LinkedIn prints \"• 1st\", \"• 2nd\", \"• 3rd+\"). \"\" if not shown.\n"
+        "  \"network\"  : \"1st\", \"2nd\", or \"3rd+\". Use the degree marker shown next to the "
+        "name (LinkedIn prints \"• 1st\", \"• 2nd\", \"• 3rd+\"). If there is no marker, use the "
+        "search page the person appears on: everyone on the \"1st degree\" page is \"1st\", on the "
+        "\"1st+2nd degree\" page is \"2nd\" unless marked 1st, otherwise \"\".\n"
         "  \"role\"     : \"recruiter\", \"hiring manager\", \"engineer\", or \"other\"\n"
         "  \"note\"     : a 2-line, friendly connection note the user could send, tailored to "
         "the resume and this company (under 300 characters). \"\" if no resume.\n\n"
