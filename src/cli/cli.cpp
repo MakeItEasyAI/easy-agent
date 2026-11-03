@@ -103,7 +103,8 @@ void printUsage() {
                  "  easy fill form [url] [resume.pdf]  open the form (if a url is given) and fill it\n"
                  "                                  from your resume (needs the easy-agent extension)\n"
                  "  easy jobs [resume.pdf]          scan the LinkedIn jobs/posts open in Chrome and\n"
-                 "                                  save matches (with links) to jobs.md\n"
+                 "                                  save matches to a dated file in the easy-jobs\n"
+                 "                                  folder (last 7 days kept)\n"
                  "                                  (add --watch to keep scanning as you scroll)\n"
                  "  easy run <name | file.json>     run a saved recipe or a recipe file (no AI)\n"
                  "  easy model                      pick the AI model from a menu (saves it)\n"
@@ -612,8 +613,8 @@ void printSessionHelp() {
                  "  move all PDFs from ~/Downloads/easy_test to ~/Documents/easy_bills\n"
                  "Other commands:\n"
                  "  fill form        fill the form in your Chrome tab from your resume\n"
-                 "  jobs             watch LinkedIn as you scroll, save matches into jobs.md\n"
-                 "                   (press Enter when you're done scrolling)\n"
+                 "  jobs             watch LinkedIn as you scroll, save matches into a dated file\n"
+                 "                   in the easy-jobs folder (press Enter when done scrolling)\n"
                  "  model            pick which AI model to use (local or cloud)\n"
                  "  list             show saved recipes\n"
                  "  forget           forget this session's earlier tasks (start fresh)\n"
@@ -870,9 +871,10 @@ std::string nowStamp() {
     return buf;
 }
 
-// Picks where to save jobs.md: prefer an allowed ~/Documents folder, else the
-// first allowed folder, else ~/Documents. Always a folder the user allowed.
-std::string jobsFilePath(const storage::Config& config) {
+// The folder where daily job files live: prefer an allowed ~/Documents folder,
+// else the first allowed folder, else ~/Documents. Always a folder the user
+// allowed. Files inside are named jobs-YYYY-MM-DD.md, one per day.
+std::string jobsDir(const storage::Config& config) {
     std::string folder = "~/Documents";
     if (!config.allowed_folders.empty()) {
         folder = config.allowed_folders.front();
@@ -882,7 +884,16 @@ std::string jobsFilePath(const storage::Config& config) {
     }
     std::string path = actions::expandHome(folder);
     while (!path.empty() && path.back() == '/') path.pop_back();
-    return path + "/jobs.md";
+    return path + "/easy-jobs";
+}
+
+// Today's file name, e.g. "jobs-2026-11-03.md". Dates sort the same as the
+// calendar, so sorting file names by text also sorts them oldest-to-newest.
+std::string todayFileName() {
+    std::time_t t = std::time(nullptr);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "jobs-%Y-%m-%d.md", std::localtime(&t));
+    return buf;
 }
 
 // easy jobs [resume.pdf]: read the LinkedIn jobs / "we're hiring" posts open in
@@ -1053,15 +1064,23 @@ int collectJobsCommand(const std::string& resumeArg, const std::string& configPa
         return "https://www.linkedin.com/jobs/view/" + id + "/";
     };
 
-    const std::string outPath = jobsFilePath(config);
+    const std::string dir = jobsDir(config);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::string outPath = dir + "/" + todayFileName();
 
-    // Load what's already in jobs.md so we never append a job twice - across
-    // runs OR within one run. A job is "the same" if its link matches, or (when
-    // it has no link) its title+company matches.
+    // Load every daily file in the folder so we never append a job twice -
+    // across the whole week's files OR within one run. A job is "the same" if
+    // its link matches, or (when it has no link) its title+company matches.
+    const auto isJobsFile = [](const std::filesystem::path& p) {
+        const std::string name = p.filename().string();
+        return name.rfind("jobs-", 0) == 0 && p.extension() == ".md";
+    };
     std::string existing;
-    {
-        std::ifstream in(outPath);
-        if (in) { std::ostringstream ss; ss << in.rdbuf(); existing = ss.str(); }
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (!entry.is_regular_file() || !isJobsFile(entry.path())) continue;
+        std::ifstream in(entry.path());
+        if (in) { std::ostringstream ss; ss << in.rdbuf(); existing += ss.str(); }
     }
     std::set<std::string> seenThisRun;
     const auto isDuplicate = [&](const std::string& title, const std::string& org,
@@ -1107,7 +1126,7 @@ int collectJobsCommand(const std::string& resumeArg, const std::string& configPa
     }
 
     if (n == 0) {
-        std::cout << "\nNothing new - every job found is already in " << outPath << ".\n";
+        std::cout << "\nNothing new - every job found is already saved in " << dir << ".\n";
         return 0;
     }
 
@@ -1119,8 +1138,23 @@ int collectJobsCommand(const std::string& resumeArg, const std::string& configPa
     out << "\n## Job matches - " << nowStamp() << "\n\n" << body.str();
     out.close();
 
+    // Keep only the 7 newest daily files (a rolling week); delete older ones.
+    std::vector<std::string> daily;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (entry.is_regular_file() && isJobsFile(entry.path()))
+            daily.push_back(entry.path().filename().string());
+    }
+    std::sort(daily.begin(), daily.end());   // oldest first (date is in the name)
+    constexpr std::size_t kKeepDays = 7;
+    if (daily.size() > kKeepDays) {
+        for (std::size_t i = 0; i < daily.size() - kKeepDays; ++i) {
+            std::filesystem::remove(dir + "/" + daily[i], ec);
+        }
+    }
+
     std::cout << "\nSaved " << n << " new job(s) to " << outPath << ".\n"
-              << "Open it, decide which to pursue, and apply / message yourself on LinkedIn.\n";
+              << "All your job files are in " << dir << " (last 7 days kept).\n"
+              << "Open today's file, decide which to pursue, and apply / message yourself.\n";
     return 0;
 }
 
